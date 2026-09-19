@@ -1,71 +1,57 @@
-# G1 App — balanced stand + interactive control (MuJoCo + ONNX policy)
+# G1 App — Balanced Stand + Interactive Control (MuJoCo + ONNX Policy)
 
 A standalone application that makes a simulated Unitree G1 humanoid stand
 balanced and walk around in MuJoCo, driven by a pretrained neural-network
 controller. It ships everything it needs in `models/` and depends on nothing
 outside this folder except a Python environment with MuJoCo.
 
-Three ways to run it:
-
-| Script | What you get |
-|---|---|
-| `g1_gui_control.py` | 3D view + control panel (sliders, buttons, keyboard) — the full app |
-| `run_g1_stand.py` | 3D view only, robot standing in place — the demo |
-| `g1_stand_onnx.py --headless` | No windows, terminal log only — for testing servers |
-| `check_gui.py` | 10 s window test — use when the control panel won't appear |
-
-All commands run from the workspace root (`UniRobot/`) with its `.venv`:
+## Quickstart (Unified CLI)
 
 ```bash
-.venv/bin/python g1_app/g1_gui_control.py
-.venv/bin/python g1_app/run_g1_stand.py --seconds 30
-.venv/bin/python g1_app/g1_stand_onnx.py --headless --seconds 12
-.venv/bin/python g1_app/check_gui.py
+# From workspace root (after git clone + git lfs pull + pip install -e ./g1_app)
+g1 check                 # 10 s GUI self-test (needs display)
+g1 stand --seconds 30    # viewer demo
+g1 gui                   # 3D view + control panel
+g1 stand --headless --seconds 12   # servers / CI
+g1 stand --terrain slope # pick terrain: flat|rough|slope|steps|obstacles
+g1 train                 # get-up training + dashboard on :6006
+g1 dashboard             # dashboard only
+g1 record --episodes 3   # headless CPU video of latest policy
+g1 terrains              # regenerate test scenes
+g1 verify                # model sha256 + deploy.yaml + math + terrains
 ```
 
-Requirements: `mujoco`, `onnxruntime`, `numpy`, `tkinter`. The viewer/GUI
-scripts need a display; the headless script does not.
+Requirements: `mujoco>=3.5`, `onnxruntime>=1.20`, `numpy>=1.26`, `tkinter`.
+Viewer/GUI need a display; headless commands do not.
 
 ---
 
-## 1. Where the model came from
+## 1. Where the Model Came From
 
-The brain of the robot is `models/g1_policy.onnx` (~860 KB). It was **not**
-trained here — it is the official pretrained G1 velocity-tracking policy
-exported from Unitree's RL training repo (`unitree_rl_mjlab`), copied
-verbatim (sha256 `2a66ca63…09d3fc28`) from:
+The brain is `models/g1_policy.onnx` (~860 KB, LFS-tracked). It is the **official
+pretrained G1 velocity-tracking policy** exported from Unitree's RL training
+repo (`unitree_rl_mjlab`), copied verbatim (sha256
+`2a66ca6336eadb3c0b34b557763f3e06d01ff8fcf6260dd4cedbd69d6093fc28`) from:
 
 ```
 unitree_rl_mjlab/deploy/robots/g1/config/policy/velocity/v0/exported/policy.onnx
 ```
 
-Its training/deployment parameters travel with it in `models/deploy.yaml`:
-PD stiffness/damping per joint, the nominal standing pose, the per-joint
-action scales, the 50 Hz control rate (`step_dt: 0.02`), the gait period
-(0.6 s) and the observation scales. The app reads its constants from that
-same configuration, so policy and parameters can never disagree.
+Training/deployment parameters travel with it in `models/deploy.yaml` (authority):
+PD stiffness/damping per joint, nominal standing pose, per-joint action scales,
+50 Hz control rate (`step_dt: 0.02`), gait period (0.6 s), observation scales.
+The app reads constants from this YAML so policy and parameters can never disagree.
 
-The robot body (`models/g1/`) is Unitree's G1 MuJoCo description, copied
-from `unitree_mujoco/unitree_robots/g1/`: `scene_29dof.xml` (flat floor +
-`g1_29dof.xml` with 29 torque-controlled motors) plus `meshes/`. Scores of
-megabytes, but it is what you see in the viewer.
+The robot body (`models/g1/`) is Unitree's G1 MuJoCo description from
+`unitree_mujoco/unitree_robots/g1/`: `scene_29dof.xml` (flat floor + `g1_29dof.xml`
+with 29 torque-controlled motors) plus `meshes/` (60 STL files, LFS-tracked).
 
-A note on the [ioai-tech `onnx_policy` zoo](https://github.com/ioai-tech/onnx_policy):
-that repo advertises ready-made G1 policies, including a dedicated
-`controller_policies/stand_loop_policy` and `walking_policy`. We investigated
-all three G1 binaries — every Git-LFS object returns **404 (not on the
-server)**, and both controller files are absolute-path symlinks to
-`/opt/onnx_policy/...`, broken outside the author's machine. So nobody can
-download them today. The code already auto-detects the zoo's 47-observation
-legs-only format (with LSTM state), so the day upstream is fixed you just run
-`--policy <g1_policy.onnx>` with no code change. Until then, the bundled
-policy below does the job.
+---
 
-## 2. How it works
+## 2. How It Works
 
-The app is a classic learned-locomotion stack: a neural network decides
-*where the joints should go*, and simple spring-damper motors (PD
-controllers) pull them there. It runs at two speeds:
+Classic learned-locomotion stack: ONNX policy proposes joint targets at 50 Hz,
+PD spring-dampers realize them every sim step (200 Hz).
 
 ```
 every sim step (200 Hz):   read joints → PD torque → write motor commands
@@ -73,181 +59,176 @@ every 4th sim step (50 Hz): read IMU+joints → build 98-number observation
                              → ONNX inference → 29 target joint angles
 ```
 
-**Observation (98 numbers).** Body angular velocity (3) + projected gravity
-(3, i.e. "which way is down in the robot's own frame") + your velocity
-command (3: forward, sideways, turn) + gait clock sin/cos (2) + joint angles
-relative to the nominal pose (29) + joint velocities (29) + the network's own
-previous output (29). Scales come straight from `deploy.yaml`.
+**Observation (98).** Body angular velocity (3) + projected gravity (3) +
+velocity command (3) + gait clock sin/cos (2) + joint angles relative to nominal
+pose (29) + joint velocities (29) + previous action (29). Scales from `deploy.yaml`.
 
-**Action (29 numbers).** The network outputs small corrections; target angle
-= nominal pose + correction × per-joint scale. Each motor then applies
-`torque = kp × (target − angle) − kd × velocity`, clamped to the actuator
-limits from the MuJoCo model. Legs, waist, arms and wrists are all driven by
-the network — nothing is hand-scripted.
+**Action (29).** Target angle = nominal pose + correction × per-joint scale.
+Motor torque = `kp × (target − angle) − kd × velocity`, clamped to actuator limits.
+Legs, waist, arms, wrists — all driven by the network, nothing hand-scripted.
 
-**Standing still.** A velocity policy with a zero command still marches in
-place and wanders (~0.34 m in 20 s). With the default `standstill=True` the
-bridge (`G1StandPolicy`) instead runs a small state machine on top:
+**Standstill (default).** Zero command → state machine:
+- `walk` — you command motion; passes through untouched.
+- `hold` — released while moving: anchor = stop spot, gentle corrective
+  command (≤ 0.3 m/s) steps back. Drift ≈ 2 cm.
+- `frozen` — smoothed body speed < 0.08 m/s for 1 s: gait clock stops,
+  network holds static balanced pose. Drift ≈ 1 cm.
+  Push (> 0.30 m/s) → back to `hold`.
 
-- `walk` — you are commanding motion; the command passes through untouched.
-- `hold` — you released the command while moving: the spot where you stopped
-  becomes an anchor and a gentle corrective command (≤ 0.3 m/s) steps the
-  robot back to it. Drift ≈ 2 cm.
-- `frozen` — once the smoothed body speed stays below 0.08 m/s for a second,
-  the gait clock stops and the network holds a static balanced pose.
-  Drift ≈ 1 cm. A real push (speed > 0.30 m/s) drops back to `hold`
-  automatically.
+Use `set_command()` so logic sees intent. `--no-standstill` restores raw march-in-place.
 
-Always change the command through `set_command()` so this logic sees your
-intent. `--no-standstill` (or the GUI checkbox) restores raw march-in-place.
+Two fixed bugs worth knowing: gravity sign was inverted; PD ran at 50 Hz instead
+of every sim step. Both fixed in `core/bridge.py`.
 
-Two bugs from earlier attempts are fixed in here and worth knowing about:
-the body's "down" vector was computed upside-down, and motor torques were
-recomputed only at the slow 50 Hz instead of every simulation step.
+---
 
-## 3. Using the control panel
+## 3. Using the Control Panel (`g1 gui`)
 
-`g1_gui_control.py` opens the 3D viewer plus a **G1 Control** panel:
+Opens 3D viewer + **G1 Control** panel:
 
 - **Sliders** — Forward (−0.5…1.0 m/s), Sideways (−0.5…0.5 m/s),
-  Turn (−1.0…1.0 rad/s). These are the exact ranges the policy was trained on;
-  stay inside them.
-- **Buttons** — Stand / Walk / Turn left / Stop set preset commands, Reset
-  re-drops the robot in its nominal pose, Quit closes everything.
-- **Keyboard** — arrows move, `A`/`D` turn, `Space` stands still.
-- **Checkbox** — "Stand still (lock position…)" toggles the anchor logic above.
-- **Terrain dropdown + Load** — switch between flat / rough / slope / steps /
-  obstacles without restarting (see section 4). The robot respawns at the
-  start pad; your slider positions are kept.
-- **Status line** — sim time, torso height (~0.78 m standing), tilt (near 0
-  upright), your command, and state: `WALKING`, `STANDING (settling…)` or
-  `STANDING STILL`. If it ever says `FELL`, press Reset.
+  Turn (−1.0…1.0 rad/s). Exact training ranges; stay inside them.
+- **Buttons** — Stand / Walk / Turn left / Stop (presets), Reset (re-drop),
+  Quit (close all).
+- **Keyboard** — arrows move, `A`/`D` turn, `Space` = stand.
+- **Checkbox** — "Stand still (lock position…)" toggles anchor logic.
+- **Terrain dropdown + Load** — switch flat/rough/slope/steps/obstacles
+  without restart. Robot respawns at start pad; sliders preserved.
+- **Status line** — sim time, torso height (~0.78 m), tilt (~0 upright),
+  command vector, state: `WALKING`, `STANDING (settling…)`,
+  `STANDING STILL`, or `FELL` (press Reset).
 
-## 4. Test terrains
+---
 
-Five scenes ship in `models/g1/` (regenerate with `make_terrains.py`, which
-needs only `numpy` + `imageio`). Every scene keeps a flat 2×2 m start pad at
-the origin; features start at x ≥ 1.2 m ahead of the robot. Pick one with the
-GUI dropdown or `--terrain <name>` (`--scene <path>` still overrides):
+## 4. Test Terrains
 
-| Terrain | What it is | Verified headless result |
+Five scenes in `models/g1/` (regenerate: `g1 terrains`, needs `numpy` +
+`imageio`). Every scene keeps a flat 2×2 m start pad at origin; features at
+x ≥ 1.2 m.
+
+| Terrain | File | Verified (headless) |
 |---|---|---|
-| `flat` | Empty floor (`scene_29dof.xml`) | 0.5 m/s → 5.7 m, no fall |
-| `rough` | Choppy bumps 2–17 cm over a 12×12 m field (`rough.png` heightfield) | 0.5 m/s → 8.7 m in 20 s, no fall |
-| `slope` | 7° ramp, 3 m wide, up to a 0.33 m platform | 0.4 m/s → climbs onto platform, no fall |
-| `steps` | 5× 6 cm steps up, platform, steps back down (3 m wide) | 0.25 m/s → climbs up and over, no fall |
-| `obstacles` | 5–6 cm step-over bars + blocks forming a 1.4 m corridor + pillar | 0.25 m/s → clears the bars, no fall |
+| `flat` | `scene_29dof.xml` | 0.5 m/s → 5.7 m, no fall |
+| `rough` | `scene_rough.xml` + `meshes/rough.png` | 0.5 m/s → 8.7 m in 20 s |
+| `slope` | `scene_slope.xml` | 0.4 m/s → climbs 7° ramp to platform |
+| `steps` | `scene_steps.xml` | 0.25 m/s → 5×6 cm steps up, over, down |
+| `obstacles` | `scene_obstacles.xml` | 0.25 m/s → clears bars, corridor, pillar |
 
-Two honest caveats from testing: the policy was trained for walking, not
-parkour — take features **slowly** (blind full-speed charges trip on step
-edges and faceplant into blocks), and steer with the GUI rather than walking
-blind; drift will eventually carry an unguided robot into something. The
-scenes are deliberately gentle (wide features, low risers, solid blocks with
-no floating edges) so careful driving succeeds.
+Policy trained for walking, not parkour — drive slowly, steer via GUI.
 
-## 5. Verification (all headless, all passing)
+---
+
+## 5. Verification (All Headless, Passing)
 
 | Test | Result |
 |---|---|
 | Stand 15–30 s from rest | No fall, height 0.778–0.785 m, tilt < 0.04, drift ~1 cm |
-| Walk 5 s → release → 12–18 s stand | No fall, settles to static pose, drift from stop ~2 cm |
-| Walk + turn commands | Stays upright (height 0.776 m over 5 s) |
-| Identity | Bundled model sha256 matches the training export exactly |
-| Portability | Same result launched from `/tmp` — no workspace dependency |
-| Get-up task smoke (120 iters) | Trains, exports 94-obs `policy.onnx`, no fall-related errors |
+| Walk 5 s → release → 12–18 s stand | Settles to static pose, drift from stop ~2 cm |
+| Walk + turn commands | Upright (height 0.776 m over 5 s) |
+| Identity | Model sha256 matches training export exactly |
+| Portability | Same result from `/tmp` — no workspace dependency |
+| Get-up smoke (120 iters) | Trains, exports 94-obs `policy.onnx`, no fall errors |
 
-## 6. Training fall recovery (get-up policy)
+Run: `g1 verify` (model sha256 + config 29-DoF + gravity convention + all 5 terrains).
 
-All training code lives here in `training/` — the third-party folders are
-only used, never modified. The task `Unitree-G1-Getup` starts every episode
-with the robot in a random fallen pose (any orientation, low height,
-sprawled joints) on flat ground. No failure termination: episodes run the
-full 8 s. Design details match the velocity task's PPO setup (same network,
-same auto-ONNX-export runner).
+---
 
-Reward recipe (v2, HUMANUP-style two-stage refinement):
-- *Correct way up*: height → 0.78 m, upright torso, **pushing through the
-  feet** (dense foot-force signal), **standing on both feet** bonus, nominal
-  pose shaping, stand-success bonus — plus a penalty for torso/arm ground
-  contact while the body is high (head-bridging scores nothing) and soft
-  left/right symmetry.
-- *Gentle*: torque², joint-velocity², action-rate², joint-acceleration²,
-  joint-limit and self-collision penalties — smooth, low-effort motion that
-  won't hurt people or the robot.
+## 6. Training Fall Recovery (Get-Up Policy)
 
-Stage I (discovery, weak regularization) → Stage II (this recipe, resumed
-from Stage I's final checkpoint via `--run-name <stage1> --resume`).
+All training code in `training/getup/` — third-party folders used, never modified.
+Task `Unitree-G1-Getup`: random fallen starts (any orientation, low height,
+sprawled joints), 8 s episodes, no failure termination. Stage I (discovery,
+weak regularization) → Stage II (this recipe, resume via `--resume`).
 
-One command runs everything (dashboard + training), from anywhere:
+**Reward recipe v2 (HUMANUP-style):**
+
+*Correct way up:*
+- `stand_height` (exp kernel → 0.78 m)
+- `upright` (exp kernel → projected gravity [0,0,-1])
+- `feet_force` (dense foot-ground force, target 250 N)
+- `stand_on_feet` (bonus: tall + upright + both feet contact)
+- `stand_pose` (exp kernel → nominal pose)
+- `stand_success` (sparse: height > 0.70 + tilt < 0.3)
+- `pelvis_rising` (exp kernel → pelvis height)
+- `com_vel_z` (exp kernel → positive vertical CoM velocity)
+- `symmetry` (soft bilateral action symmetry)
+
+*Gentle:*
+- `bad_support` (penalize torso/arm contact while body high)
+- `no_head_contact` (penalize head/neck contact while body not flat)
+- `joint_torques`, `joint_vel`, `joint_acc_l2`, `joint_pos_limits`,
+  `action_rate_l2` (effort/smoothness/limit penalties)
+- `self_collisions` (force-threshold penalty)
 
 ```bash
-.venv/bin/python g1_app/train_getup.py
-.venv/bin/python g1_app/train_getup.py --num-envs 1024 --max-iterations 2000
-.venv/bin/python g1_app/train_getup.py --run-name overnight --resume
+g1 train                              # defaults: 2048 envs, 5001 iters
+g1 train -- --num-envs 1024 --max-iterations 2000
+g1 train -- --run-name overnight --resume   # resume from Stage I
 ```
 
-Dashboard: http://localhost:6006 — a plain-language page served by
-`dashboard.py`. It auto-updates every 3 seconds (no refresh needed) and shows:
-live/idle status, iteration / max, elapsed time, training speed, ETA, and
-charts with explanations — **Stand-up success** (the money chart, climbs to
-3.0 when recovery is learned), shaping rewards (height → upright → pose),
-and total reward. A run picker lists every training run, newest first.
-The **Watch latest policy** card plays a recorded rollout of the newest
-saved policy (3 episodes from random falls, with per-episode results);
-press **Record fresh video** any time for a new one — recording runs
-headlessly on CPU (`record_getup.py`, safe to use while training continues)
-and the page picks it up automatically. Raw TensorBoard is still available
-via `--tensorboard` (port 6007) for deep
-dives. Checkpoints and `policy.onnx` snapshots land in
-`unitree_rl_mjlab/logs/rsl_rl/g1_getup/` every 100 iterations (~1.5 h for the
-default 5001 iterations with 2048 envs at ~45k steps/s on an RTX 3070).
-Ctrl+C stops everything cleanly. Lower `--num-envs` (e.g. 512) on smaller
-GPUs.
+Dashboard: `g1 dashboard` → http://localhost:6006 (auto-updates every 3 s).
+Watch **Stand-up success → 3.0**. Raw TensorBoard: `g1 train -- --tensorboard`
+(port 6007). Checkpoints + `policy.onnx` every 100 iters:
+`unitree_rl_mjlab/logs/rsl_rl/g1_getup/`. Ctrl+C stops cleanly.
+Lower `--num-envs` (e.g. 512) on smaller GPUs.
+
+---
 
 ## 7. Troubleshooting
 
-- **No control panel?** Run `g1_app/check_gui.py` first. If even that shows
-  nothing, the problem is your desktop setup (e.g. SSH without X forwarding),
-  not this app. If the check passes: make sure you launched
-  `g1_gui_control.py` (not `run_g1_stand.py`, which has no panel), look
-  behind the 3D window and in the taskbar — the panel forces itself on top
-  for 3 seconds at startup.
-- **Terminal shows a traceback?** Paste the whole output — the app prints
-  which model/scene it loaded before opening windows, which pinpoints it.
-- **`libdecor`/`GLFWError Wayland` warnings?** Harmless fallbacks; the
-  windows still work.
-- **`OpenGL error 0x502` in old simulator logs?** Benign headless noise,
-  unrelated to this app.
-- **Robot falls after you push sliders to extremes?** Press Reset. Commands
-  outside the trained ranges are not guaranteed stable.
+- **No control panel?** `g1 check` first. If that fails → display issue (SSH
+  without X). Else: ran `g1 stand` (no panel) instead of `g1 gui`; look behind
+  3D window / taskbar (forced on top 3 s at startup).
+- **Traceback?** App prints model+scene before windows — paste full output.
+- **`libdecor` / Wayland warnings?** Harmless.
+- **`OpenGL 0x502` in headless logs?** Benign.
+- **Falls at extreme sliders?** Press Reset; outside
+  vx∈[−0.5,1.0], vy∈[−0.5,0.5], wz∈[−1,1] stability not guaranteed.
 
-## 8. Repository layout
+---
+
+## 8. Package Layout
 
 ```
 g1_app/
-├── README.md            # this file
-├── g1_stand_onnx.py     # G1StandPolicy bridge + headless/optional-viewer runner
-├── g1_gui_control.py    # interactive 3D + tkinter control panel (+ terrain switch)
-├── run_g1_stand.py      # viewer-only standing demo
-├── check_gui.py         # tkinter environment self-test
-├── make_terrains.py     # regenerates the test scenes
-├── train_getup.py       # one-command get-up training + dashboard
-├── dashboard.py         # friendly live training dashboard (port 6006)
-├── record_getup.py      # headless CPU recorder: latest policy -> mp4 + results
-│                        # (videos/ output is git-ignored)
-├── training/            # our training code (third-party stays untouched)
-│   └── getup/
-│       ├── getup_env_cfg.py     # fall-recovery env: fallen starts, shaping rewards
-│       ├── mdp/                 # base_height obs + stand_* rewards
-│       └── config/g1/           # G1 env wiring, PPO config, task registration
-└── models/ below
-└── models/
-    ├── g1_policy.onnx   # pretrained 29-DoF velocity policy (the brain)
-    ├── deploy.yaml      # its gains, nominal pose, scales, rates
-    └── g1/              # G1 MuJoCo description: scene + meshes (the body)
-        ├── scene_29dof.xml      # flat (default)
-        ├── scene_rough.xml + meshes/rough.png
-        ├── scene_slope.xml
-        ├── scene_steps.xml
-        └── scene_obstacles.xml
+├── cli.py                 # unified `g1` CLI
+├── core/                  # shared lib (single source of truth)
+│   ├── math.py            # quat_to_projected_gravity, euler_to_quat
+│   ├── config.py          # paths, load_deploy_yaml, resolve_videos_dir
+│   ├── terrains.py        # TERRAINS dict + resolve_scene()
+│   └── bridge.py          # G1StandPolicy, reset_standing, run_stand, telemetry()
+├── apps/                  # interactive
+│   ├── stand.py           # viewer/headless balanced stand
+│   ├── gui.py             # 3D + tkinter control panel
+│   └── check.py           # tkinter self-test
+├── lab/                   # training & analysis
+│   ├── train.py           # get-up training + dashboard
+│   ├── dashboard.py       # friendly live dashboard (:6006)
+│   └── record.py          # headless CPU policy video
+├── tools/terrains.py      # test scene generator (`g1 terrains`)
+├── training/getup/        # fall-recovery task (env, rewards, PPO)
+├── tests/                 # pytest: math, config, terrains
+├── scripts/verify_model.py # `g1 verify`
+├── models/                # curated assets (LFS)
+│   ├── g1_policy.onnx     # pretrained 29-DoF velocity policy
+│   ├── deploy.yaml        # gains, pose, scales, rates
+│   └── g1/                # scenes + 60 STL meshes
+├── outputs/videos/        # local artifacts (gitignored)
+└── docs/                  # split documentation
+    ├── architecture.md
+    ├── how_it_works.md
+    ├── terrains.md
+    ├── training.md
+    └── troubleshooting.md
+```
+
+---
+
+## 9. Development
+
+```bash
+.venv/bin/pip install -e ./g1_app[dev]
+pytest g1_app/tests -q       # 6 tests
+ruff check g1_app            # lint
+g1 verify                    # smoke test
 ```
