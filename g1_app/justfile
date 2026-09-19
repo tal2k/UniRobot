@@ -1,0 +1,10 @@
+# g1_app shortcuts (also available from workspace root via ../justfile)
+set working-directory := ".."
+
+py := if path_exists(".venv/bin/python") == "1" { ".venv/bin/python" } else { "python3" }
+
+verify:
+  {{py}} -m g1_app.cli verify
+
+test:
+  {{py}} -m pytest g1_app/tests -q

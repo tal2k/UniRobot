@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+MUJOCO_LOG.TXT
+videos/
+outputs/
+*.mp4
+*.log

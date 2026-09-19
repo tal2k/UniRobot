@@ -1,0 +1,63 @@
+[project]
+name = "g1-app"
+version = "0.2.0"
+description = "Unitree G1 balanced stand, interactive control, and fall-recovery training (MuJoCo + ONNX)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "mujoco>=3.5.0",
+  "onnxruntime>=1.20",
+  "numpy>=1.26",
+  "imageio>=2.30",
+  "imageio-ffmpeg>=0.5",
+  "tensorboard>=2.15",  # dashboard event parsing
+]
+
+[project.optional-dependencies]
+train = [
+  "mjlab==1.2.0",
+  "mujoco-warp==3.5.0",
+]
+dev = [
+  "pytest>=8",
+  "ruff>=0.4",
+]
+
+[project.scripts]
+g1 = "g1_app.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["g1_app*", "core*", "apps*", "lab*", "tools*", "training*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# Research-sim code: allow broad excepts + empty handlers (surfaced in UI/logs),
+# long legacy functions, and implicit string concat in dashboard METRICS.
+ignore = ["BLE001", "S110", "S112", "S101", "ISC004", "RUF046", "RUF059", "FURB167", "FURB192", "E501"]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Legacy shims + runtime sys.path bootstrapping (imports after path setup).
+"g1_stand_onnx.py" = ["E402"]
+"g1_gui_control.py" = ["E402"]
+"run_g1_stand.py" = ["E402"]
+"check_gui.py" = ["E402"]
+"make_terrains.py" = ["E402"]
+"train_getup.py" = ["E402"]
+"dashboard.py" = ["E402"]
+"record_getup.py" = ["E402"]
+"cli.py" = ["E402"]
+"lab/train.py" = ["E402"]
+"lab/dashboard.py" = ["E402"]
+"lab/record.py" = ["E402"]
+"apps/*.py" = ["E402"]
+"core/*.py" = ["E402"]
+"tools/*.py" = ["E402"]
+"scripts/*.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "g1_app/tests"]
