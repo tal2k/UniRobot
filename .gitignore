@@ -23,6 +23,8 @@ tensorboard/
 *.onnx.bak
 
 # Build trees (local only)
+thirdparty/
+thirdparty_src/
 thirdparty_src/*/build/
 thirdparty_src/**/CMakeFiles/
 thirdparty_src/**/CMakeCache.txt
