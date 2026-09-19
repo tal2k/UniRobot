@@ -1,0 +1,9 @@
+[submodule "unitree_mujoco"]
+	path = unitree_mujoco
+	url = https://github.com/unitreerobotics/unitree_mujoco.git
+[submodule "unitree_rl_mjlab"]
+	path = unitree_rl_mjlab
+	url = https://github.com/unitreerobotics/unitree_rl_mjlab.git
+[submodule "unitree_sdk2_python"]
+	path = unitree_sdk2_python
+	url = https://github.com/unitreerobotics/unitree_sdk2_python.git

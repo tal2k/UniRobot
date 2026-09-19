@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.uv/
+
+# App / run outputs (local only, never commit)
+outputs/
+g1_app/outputs/
+g1_app/videos/
+*.mp4
+MUJOCO_LOG.TXT
+*.log
+
+# Training / logs (local only)
+unitree_rl_mjlab/logs/
+logs/
+tensorboard/
+*.tfevents*
+
+# Models generated locally (keep curated models/, ignore snapshots)
+*.onnx.bak
+
+# Build trees (local only)
+thirdparty_src/*/build/
+thirdparty_src/**/CMakeFiles/
+thirdparty_src/**/CMakeCache.txt
+unitree_rl_mjlab/deploy/**/build/
+unitree_mujoco/**/build/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*~
