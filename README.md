@@ -1,136 +1,128 @@
-# UniRobot — Unitree G1 Humanoid Research Workspace
+# UniRobot
 
-Balanced stand, interactive control, test terrains, and fall-recovery (get-up) training in MuJoCo.
+**Teaching a Unitree G1 humanoid to stand its ground, get back up, and feel at home.**
+
+![Python >=3.10](https://img.shields.io/badge/python-%3E%3D3.10-blue)
+![MuJoCo](https://img.shields.io/badge/sim-MuJoCo-orange)
+![License](https://img.shields.io/badge/license-Apache--2.0-green)
+
+Millions of elderly people live alone. A truly useful home companion robot must do
+three things before anything else: **keep its balance** when bumped, **get back up**
+when it falls, and **move safely indoors** around furniture, doors, and clutter.
+UniRobot is the training ground where our G1 learns exactly that — entirely in
+MuJoCo simulation, with one-command tooling from first clone to trained policy.
+
+## Highlights
+
+- **Two-policy locomotion with graceful handover.** A velocity walking policy for
+  getting around, a dedicated stand-still balance policy for staying put, and an
+  `auto` mode that brakes to a near-stop *before* handing over — never mid-stride —
+  with a 0.4 s cross-fade so torques never jump.
+- **Fall recovery, trained from scratch.** A full get-up pipeline on MJLab/RSL-RL
+  (PPO, 2048 parallel envs) with a live web dashboard, plus a shove-aware
+  stand-still task with a push curriculum for the refinement round.
+- **A digital-twin apartment.** An 18×11 m, 11-zone elderly apartment — living room,
+  kitchen, bedroom, bathroom with grab bars, walker, rugs, doors, clutter — alongside
+  5 outdoor test tracks, all regenerable with one command.
+- **One-command UX.** A unified `g1` CLI (`stand`, `gui`, `train`, `record`,
+  `terrains`, `verify`) with `just` shortcuts; headless mode for servers and CI.
+- **Train anywhere.** Local GPU runs or free Colab T4 sessions with Drive-backed
+  checkpoints, resume support, and TensorBoard — same commands, same configs.
+- **Reproducible by construction.** Pinned upstream submodules, LFS-versioned models,
+  `deploy.yaml` as the single authority for gains and poses, and `g1 verify` to prove
+  a checkout is good.
+
+## See it in action
+
+```bash
+g1 stand --seconds 30          # balanced stand in the viewer
+g1 gui --mode auto             # drive it with WASD: walk, release, watch it settle
+g1 stand --terrain apartment   # stand inside the elderly apartment
+g1 record --policy g1_app/models/g1_stand_policy.onnx --stand  # headless policy video
+```
+
+No display (SSH/CI)? Append `--headless` to any sim command.
 
 ## Quickstart
 
 ```bash
-# 1. Clone with submodules + LFS
-git clone --recurse-submodules <url>
+# 1. Clone with submodules + large files
+git clone --recurse-submodules https://github.com/tal2k/UniRobot.git
 cd UniRobot
 git lfs pull
 
 # 2. Python env (once)
 python3 -m venv .venv && .venv/bin/pip install -e ./g1_app
 
-# 3. Run
-g1 check                 # 10 s GUI self-test (needs display)
-g1 stand --seconds 30    # viewer demo
-g1 gui                   # 3D view + control panel
-g1 gui --mode auto       # walk/stand switching (needs trained stand policy)
-g1 stand --headless --seconds 12   # servers / CI
-g1 train                 # get-up training + dashboard on :6006
-g1 train-stand           # stand-still balance training + dashboard
-g1 dashboard             # dashboard only
-g1 record --episodes 3   # headless CPU video of latest policy
-g1 record -- --experiment g1_stand --stand  # replay stand policy
-g1 terrains              # regenerate test scenes
-g1 verify                # model sha256 + config + math checks
+# 3. Prove it works
+g1 verify                      # model checksums + config + math + terrains
+g1 check                       # 10 s GUI self-test (needs display)
+g1 stand --headless --seconds 12
 ```
 
-Or use `just` shortcuts from workspace root:
+`just` shortcuts work from the workspace root (`just stand --seconds 30`,
+`just train -- --num-envs 1024`, `just verify`).
+
+## Under the hood
+
+| Piece | What it is |
+|---|---|
+| `g1_app/core/bridge.py` | 50 Hz ONNX inference over 200 Hz PD torque, walk/stand switching, telemetry |
+| `g1_app/training/` | `getup` (fall recovery) and `stand` (balance) MJLab task definitions |
+| `g1_app/models/` | Curated policies (`g1_policy`, `g1_stand_policy`), `deploy.yaml`, G1 scenes |
+| `g1_app/lab/` | Training launcher, live dashboard (:6006), headless video recorder, `.pt`→`.onnx` exporter |
+| `unitree_*` | Upstream sim / RL / SDK submodules — pinned, read-only (see `THIRDPARTY_PINS.md`) |
+
+The full story lives in `g1_app/docs/`: `how_it_works.md` (control loop, observations,
+standstill logic), `training.md` (reward recipes, push curriculum, Colab guide),
+`terrains.md` (all six scenes), `architecture.md`, `troubleshooting.md`.
+
+## Train your own
+
 ```bash
-just stand --seconds 30
-just gui
-just train -- --num-envs 1024
-just verify
+g1 train-stand -- --num-envs 512 --max-iterations 2000   # balance (512 envs fits small GPUs)
+g1 train -- --num-envs 1024 --max-iterations 2000        # get-up
+g1 export --ckpt <run>/model_iter1000.pt --out my_policy.onnx
 ```
 
-## Repository Layout
+Checkpoints land in `unitree_rl_mjlab/logs/` every 100 iterations with TensorBoard
+events; the friendly dashboard auto-starts on :6006. On Colab, open
+`colab_train.ipynb` — it handles drivers, patches, and Drive-backed logging.
+
+## Where this is going
+
+- [x] Balanced standing + walk/stand auto-switching
+- [x] Get-up training pipeline with dashboard and video replay
+- [x] Indoor apartment world for assistive scenarios
+- [ ] Shove-proof refinement (push curriculum, gentler regularization) — spec'd in `docs/training.md`
+- [ ] Everyday apartment tasks: doorway passing, cluttered-floor robustness, gentle contact
+- [ ] Sim-to-real via the SDK2 bindings when the policies earn it
+
+## Repository layout
 
 | Path | What | Edit? |
 |---|---|---|
-| `g1_app/` | **Our code** — installable package, unified `g1` CLI, tests, docs | ✅ yes |
-| `unitree_mujoco/` | Upstream MuJoCo sim + G1 robot XML (git submodule, pinned) | ❌ read-only |
-| `unitree_rl_mjlab/` | Upstream MJLab RL framework + task blocks (git submodule, pinned) | ❌ read-only |
-| `unitree_sdk2_python/` | Upstream SDK2 Python bindings (git submodule, pinned) | ❌ read-only |
-| `thirdparty/` | Prebuilt DDS install prefix (gitignored, generated) | ❌ generated |
-| `thirdparty_src/` | CMake sources for thirdparty (gitignored, build trees ~500MB) | ❌ build-only |
-| `.venv/` | Local Python env (gitignored) | ❌ |
-| `outputs/` | Local run artifacts — videos, logs (gitignored) | ❌ |
+| `g1_app/` | **Our code** — CLI, library, training tasks, tests, docs | ✅ yes |
+| `unitree_mujoco/` | Upstream G1 MuJoCo sim + robot XML (pinned submodule) | ❌ read-only |
+| `unitree_rl_mjlab/` | Upstream MJLab RL framework (pinned submodule) | ❌ read-only |
+| `unitree_sdk2_python/` | Upstream real-robot SDK bindings (pinned submodule) | ❌ read-only |
+| `colab_train.ipynb` | Colab training notebook (GPU + Drive) | ✅ yes |
+| `.venv/`, `outputs/`, `thirdparty*/` | Local env and generated artifacts (gitignored) | ❌ generated |
 
-## g1_app Package Structure
+Pinned commits and the update procedure live in `THIRDPARTY_PINS.md`.
+LFS-tracked: `*.onnx`, `*.STL`, `*.mp4`, `*.png` — `git lfs pull` fetches them.
 
-```
-g1_app/
-├── cli.py                 # unified `g1` CLI entrypoint
-├── core/                  # shared library (single source of truth)
-│   ├── math.py            # quat_to_projected_gravity, euler_to_quat
-│   ├── config.py          # paths, load_deploy_yaml (29-DoF), resolve_videos_dir
-│   ├── terrains.py        # TERRAINS dict + resolve_scene()
-│   └── bridge.py          # G1StandPolicy, reset_standing, run_stand, telemetry()
-├── apps/                  # interactive entrypoints
-│   ├── stand.py           # viewer/headless balanced stand
-│   ├── gui.py             # 3D + tkinter control panel
-│   └── check.py           # tkinter env self-test
-├── lab/                   # training & analysis
-│   ├── train.py           # one-command get-up training + dashboard
-│   ├── dashboard.py       # friendly live dashboard (:6006)
-│   └── record.py          # headless CPU policy video
-├── tools/terrains.py      # test scene generator
-├── training/getup/        # fall-recovery task (env, rewards, PPO config)
-├── tests/                 # pytest: math convention, config shapes, terrain files
-├── scripts/verify_model.py # `g1 verify` - model + config + math checks
-├── models/                # curated assets (LFS-tracked)
-│   ├── g1_policy.onnx     # pretrained 29-DoF velocity policy
-│   ├── deploy.yaml        # gains, pose, scales, rates (authority)
-│   └── g1/                # MuJoCo scenes + 60 STL meshes
-├── outputs/videos/        # local artifacts (gitignored)
-└── docs/                  # split documentation
-    ├── architecture.md
-    ├── how_it_works.md
-    ├── terrains.md
-    ├── training.md
-    └── troubleshooting.md
-```
-
-## Vendored Upstreams (Git Submodules)
-
-Pinned commits recorded in `THIRDPARTY_PINS.md`:
-
-| Repo | SHA | Purpose |
-|---|---|---|
-| `unitree_mujoco` | `673e44a` | G1 MuJoCo sim + robot descriptions |
-| `unitree_rl_mjlab` | `1425b15` | MJLab RL framework, PPO runner, task blocks |
-| `unitree_sdk2_python` | `65691c8` | Unitree SDK2 Python bindings (real robot) |
-
-Update procedure:
-```bash
-cd unitree_rl_mjlab && git fetch && git checkout <new-sha>
-cd .. && git add unitree_rl_mjlab && git commit -m "update unitree_rl_mjlab to <sha>"
-# update THIRDPARTY_PINS.md
-```
-
-## Large Files (Git LFS)
-
-Tracked via `.gitattributes`:
-- `g1_app/models/g1_policy.onnx` (~858 KB)
-- `g1_app/models/g1/meshes/*.STL` (~33 MB total)
-- `*.mp4`, `*.png` (terrain heightfield, recordings)
-
-`git lfs pull` fetches them after clone.
-
-## Ignored (never committed)
-
-`.venv/`, `outputs/`, `unitree_rl_mjlab/logs/`, `thirdparty/`, `thirdparty_src/*/build/`, `__pycache__/`, `MUJOCO_LOG.TXT`, `*.tfevents*`.
-
-## Documentation
-
-- `g1_app/docs/architecture.md` — package map, owned vs. vendored boundary
-- `g1_app/docs/how_it_works.md` — policy bridge, observation/action, standstill states
-- `g1_app/docs/terrains.md` — 6 scenes (5 test tracks + apartment) + regeneration
-- `g1_app/docs/training.md` — get-up task, reward recipe, dashboard, videos
-- `g1_app/docs/troubleshooting.md` — GUI/display, falls, common errors
-
-## Testing & Quality
+## Testing & quality
 
 ```bash
 .venv/bin/pip install -e ./g1_app[dev]
-pytest g1_app/tests -q       # 6 tests: math, config, terrains
+pytest g1_app/tests -q       # unit tests: math convention, 29-DoF shapes, terrains, bridge
 ruff check g1_app            # lint
-g1 verify                    # model sha256 + deploy.yaml + math + terrains
+g1 verify                    # end-to-end checkout health
+g1 stand --headless --seconds 5   # sim smoke test after bridge changes
 ```
 
 ## License
 
-Apache-2.0 (inherited from Unitree upstreams). See individual submodule LICENSE files.
+Apache-2.0, inherited from the Unitree upstreams. See the individual submodule
+LICENSE files.
