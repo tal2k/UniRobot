@@ -17,7 +17,7 @@ UniRobot is a simulation platform for training balance and locomotion policies f
 - **Fall recovery, trained from scratch.** A full get-up pipeline on MJLab/RSL-RL
   (PPO, 2048 parallel envs) with a live web dashboard, plus a shove-aware
   stand-still task with a push curriculum for the refinement round.
-- **A digital-twin apartment.** An 18×11 m, 11-zone elderly apartment — living room,
+- **A digital-twin apartment.** An 18×11 m, 11-zone apartment — living room,
   kitchen, bedroom, bathroom with grab bars, walker, rugs, doors, clutter — alongside
   5 outdoor test tracks, all regenerable with one command.
 - **One-command UX.** A unified `g1` CLI (`stand`, `gui`, `train`, `record`,
