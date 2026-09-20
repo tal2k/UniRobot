@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 .venv/
 .uv/
+.ruff_cache/
 
 # App / run outputs (local only, never commit)
 outputs/

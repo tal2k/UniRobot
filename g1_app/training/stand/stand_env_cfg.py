@@ -2,7 +2,8 @@
 
 Every episode starts from the nominal standing pose — upright, root at
 standing height, joints at default plus small noise (the "walking zero"
-position). Strong shoves arrive at random intervals; stepping to catch
+position). Shoves arrive at random intervals on a two-phase curriculum
+(gentle first, full strength later — see PUSH_PHASE); stepping to catch
 balance is allowed, falling ends the episode.
 
 Run: `g1 train -- --task stand` (or `g1 train-stand`).
@@ -28,6 +29,20 @@ from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
 import training.stand.mdp as mdp
+
+# Push curriculum — Stage II refinement (see g1_app/docs/training.md).
+#
+# Phase 1 (quiet baseline, current): gentle, infrequent shoves so the policy
+# learns tall, narrow, oscillation-free standing instead of bracing.
+# Phase 2 (robustness): full-strength shoves; the policy re-learns to catch
+# them, starting from a tall baseline instead of a permanent crouch.
+# Flip PUSH_PHASE to 2 once torso sway is small and feet are hip-width
+# in Phase-1 videos, then resume with `g1 train-stand -- --resume`.
+PUSH_PHASE = 1
+_PUSH_PRESETS = {
+  1: {"vel_xy": 0.5, "yaw": 0.5, "interval": (4.0, 6.0)},
+  2: {"vel_xy": 1.0, "yaw": 1.0, "interval": (2.0, 4.0)},
+}
 
 
 def make_stand_env_cfg() -> ManagerBasedRlEnvCfg:
@@ -194,19 +209,23 @@ def make_stand_env_cfg() -> ManagerBasedRlEnvCfg:
         "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
       },
     ),
-    # Strong shoves at random intervals — stepping to recover is allowed.
+    # Shoves at random intervals (see PUSH_PHASE curriculum above) —
+    # stepping to recover is allowed.
     "push_robot": EventTermCfg(
       func=mdp.push_by_setting_velocity,
       mode="interval",
-      interval_range_s=(2.0, 4.0),
+      interval_range_s=_PUSH_PRESETS[PUSH_PHASE]["interval"],
       params={
         "velocity_range": {
-          "x": (-1.0, 1.0),
-          "y": (-1.0, 1.0),
+          "x": (-_PUSH_PRESETS[PUSH_PHASE]["vel_xy"],
+                _PUSH_PRESETS[PUSH_PHASE]["vel_xy"]),
+          "y": (-_PUSH_PRESETS[PUSH_PHASE]["vel_xy"],
+                _PUSH_PRESETS[PUSH_PHASE]["vel_xy"]),
           "z": (-0.1, 0.1),
           "roll": (-0.5, 0.5),
           "pitch": (-0.5, 0.5),
-          "yaw": (-1.0, 1.0),
+          "yaw": (-_PUSH_PRESETS[PUSH_PHASE]["yaw"],
+                  _PUSH_PRESETS[PUSH_PHASE]["yaw"]),
         },
       },
     ),
@@ -283,7 +302,35 @@ def make_stand_env_cfg() -> ManagerBasedRlEnvCfg:
       weight=1.0,
       params={
         "std": 0.5,
-        "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+        "asset_cfg": SceneEntityCfg("robot", joint_names=(
+          "waist_.*_joint",
+          ".*_shoulder_.*_joint",
+          ".*_elbow_joint",
+          ".*_wrist_.*_joint",
+        )),
+      },
+    ),
+    "leg_pose": RewardTermCfg(
+      func=mdp.stand_pose,
+      weight=2.5,
+      params={
+        "std": 0.35,
+        "asset_cfg": SceneEntityCfg("robot", joint_names=(
+          ".*_hip_.*_joint",
+          ".*_knee_joint",
+          ".*_ankle_.*_joint",
+        )),
+      },
+    ),
+    "feet_width": RewardTermCfg(
+      func=mdp.feet_width,
+      weight=-1.0,
+      params={
+        "left_body": "left_ankle_roll_link",
+        "right_body": "right_ankle_roll_link",
+        "target_width": 0.20,
+        "std": 0.10,
+        "min_height": 0.70,
       },
     ),
     "stand_success": RewardTermCfg(
@@ -296,6 +343,14 @@ def make_stand_env_cfg() -> ManagerBasedRlEnvCfg:
       func=mdp.stand_still,
       weight=1.5,
       params={"lin_std": 0.3, "ang_std": 0.5},
+    ),
+    "ang_vel_damp": RewardTermCfg(
+      func=mdp.body_angular_velocity_penalty,
+      weight=-0.05,
+      params={
+        # Body names are set per-robot (torso_link for G1).
+        "asset_cfg": SceneEntityCfg("robot", body_names=()),
+      },
     ),
     "bad_support": RewardTermCfg(
       func=mdp.bad_support,
@@ -322,10 +377,11 @@ def make_stand_env_cfg() -> ManagerBasedRlEnvCfg:
       params={"sensor_name": self_collision_cfg.name, "force_threshold": 10.0},
     ),
     "joint_torques": RewardTermCfg(func=mdp.joint_torques_l2, weight=-3.0e-6),
-    "joint_vel": RewardTermCfg(func=mdp.joint_vel_l2, weight=-3.0e-4),
+    "joint_vel": RewardTermCfg(func=mdp.joint_vel_l2, weight=-1.0e-3),
     "joint_acc_l2": RewardTermCfg(func=mdp.joint_acc_l2, weight=-1.0e-6),
     "joint_pos_limits": RewardTermCfg(func=mdp.joint_pos_limits, weight=-5.0),
-    "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.05),
+    "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.15),
+    "action_acc_l2": RewardTermCfg(func=mdp.action_acc_l2, weight=-0.05),
   }
 
   ##

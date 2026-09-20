@@ -7,13 +7,21 @@ sys.path.insert(0, os.path.join(
     "unitree_rl_mjlab",
 ))
 
-from training.stand.stand_env_cfg import make_stand_env_cfg
+from training.stand.stand_env_cfg import (
+    _PUSH_PRESETS,
+    PUSH_PHASE,
+    make_stand_env_cfg,
+)
 
 
 def test_stand_env_cfg_builds():
     cfg = make_stand_env_cfg()
     assert "stand_still" in cfg.rewards
     assert "stand_success" in cfg.rewards
+    assert "leg_pose" in cfg.rewards
+    assert "feet_width" in cfg.rewards
+    assert "ang_vel_damp" in cfg.rewards
+    assert "action_acc_l2" in cfg.rewards
     assert "push_robot" in cfg.events
     assert "fell_over" in cfg.terminations
     assert "time_out" in cfg.terminations
@@ -21,13 +29,18 @@ def test_stand_env_cfg_builds():
     assert cfg.decimation == 4
 
 
-def test_stand_push_is_strong_and_frequent():
+def test_stand_push_curriculum():
+    # Phase 1 is the gentle baseline; Phase 2 restores full-strength shoves.
+    assert _PUSH_PRESETS[1]["vel_xy"] <= 0.5
+    assert _PUSH_PRESETS[2]["vel_xy"] >= 1.0
+    assert _PUSH_PRESETS[1]["interval"][0] >= _PUSH_PRESETS[2]["interval"][1]
     cfg = make_stand_env_cfg()
     push = cfg.events["push_robot"]
     assert push.interval_range_s is not None
-    assert push.interval_range_s[1] <= 4.0
+    preset = _PUSH_PRESETS[PUSH_PHASE]
+    assert tuple(push.interval_range_s) == preset["interval"]
     vr = push.params["velocity_range"]
-    assert abs(vr["x"][1]) >= 1.0 and abs(vr["y"][1]) >= 1.0
+    assert vr["x"][1] == preset["vel_xy"] and vr["y"][1] == preset["vel_xy"]
 
 
 def test_stand_task_registers():

@@ -1,5 +1,8 @@
 from mjlab.envs.mdp import *  # noqa: F401, F403
-from src.tasks.velocity.mdp.rewards import self_collision_cost  # noqa: F401
+from src.tasks.velocity.mdp.rewards import (  # noqa: F401
+  body_angular_velocity_penalty,
+  self_collision_cost,
+)
 
 from training.getup.mdp.observations import base_height  # noqa: F401
 from training.getup.mdp.rewards import (  # noqa: F401

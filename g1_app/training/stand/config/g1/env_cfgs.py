@@ -28,6 +28,7 @@ def unitree_g1_stand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   cfg.events["foot_friction"].params["asset_cfg"].geom_names = geom_names
   cfg.events["base_com"].params["asset_cfg"].body_names = ("torso_link",)
+  cfg.rewards["ang_vel_damp"].params["asset_cfg"].body_names = ("torso_link",)
 
   if play:
     # Effectively infinite episode length.
