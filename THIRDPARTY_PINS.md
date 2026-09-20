@@ -8,7 +8,7 @@ Recorded 2026-09-19 (`git rev-parse --short HEAD`):
 
 | Repo | SHA | Subject |
 |---|---|---|
-| `unitree_mujoco` | `673e44a` | Default simulator to G1 robot, joystick off |
+| `unitree_mujoco` | `1eb6642` | Merge pull request #131 from keeprobot/main |
 | `unitree_rl_mjlab` | `1425b15` | Fix the warnings during rough-terrain training. |
 | `unitree_sdk2_python` | `65691c8` | Correct the order and spelling errors in the H2 joint index. |
 | `g1_app` (ours) | `c678784` + uncommitted Stage-II v2 (head/no_head, pelvis_rising, com_vel_z) | Stage-II v2 getup recipe |
