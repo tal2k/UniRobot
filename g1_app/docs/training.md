@@ -59,3 +59,9 @@ Checkpoints + `policy.onnx` every 100 iters:
 94-dim actor observation layout as get-up, so `record` replays it directly
 (`--stand` starts episodes standing instead of fallen). Walk/stand switching
 in `bridge.py`/`gui.py` lands once this policy is trained.
+
+Promote a winner: copy its `policy.onnx` to
+`g1_app/models/g1_stand_policy.onnx` (LFS-tracked, next to the walking
+policy). From then on `g1 stand`/`gui` (default `--stand-policy`) and
+`g1 record -- --policy g1_app/models/g1_stand_policy.onnx --stand` use the
+curated file; the logs folders remain scratch.

@@ -229,22 +229,28 @@ def record(policy_path, episodes=3, seconds=8.0, fps=20, width=480, height=360,
 
 
 def main():
-  ap = argparse.ArgumentParser(description="Record latest policy (CPU, headless)")
-  ap.add_argument("--run-dir", default=None)
-  ap.add_argument("--experiment", default="g1_getup",
-                  help="Experiment folder under logs/rsl_rl (g1_getup|g1_stand)")
-  ap.add_argument("--stand", action="store_true",
-                  help="Start episodes standing (for stand policy) not fallen")
-  ap.add_argument("--episodes", type=int, default=3)
-  ap.add_argument("--seconds", type=float, default=8.0)
-  ap.add_argument("--fps", type=int, default=20)
-  ap.add_argument("--out", default=None)
-  ap.add_argument("--seed", type=int, default=0)
-  args = ap.parse_args()
-  run_dir = args.run_dir or find_latest_run(args.experiment)
-  print(f"run: {run_dir}")
-  record(latest_policy_onnx(run_dir), episodes=args.episodes, seconds=args.seconds,
-         fps=args.fps, out_path=args.out, seed=args.seed, standing=args.stand)
+    ap = argparse.ArgumentParser(description="Record latest policy (CPU, headless)")
+    ap.add_argument("--run-dir", default=None)
+    ap.add_argument("--policy", default=None,
+                    help="policy.onnx path directly (e.g. models/g1_stand_policy.onnx); "
+                         "overrides --run-dir/--experiment lookup")
+    ap.add_argument("--experiment", default="g1_getup",
+                    help="Experiment folder under logs/rsl_rl (g1_getup|g1_stand)")
+    ap.add_argument("--stand", action="store_true",
+                    help="Start episodes standing (for stand policy) not fallen")
+    ap.add_argument("--episodes", type=int, default=3)
+    ap.add_argument("--seconds", type=float, default=8.0)
+    ap.add_argument("--fps", type=int, default=20)
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--seed", type=int, default=0)
+    args = ap.parse_args()
+    policy_path = args.policy
+    if policy_path is None:
+        run_dir = args.run_dir or find_latest_run(args.experiment)
+        print(f"run: {run_dir}")
+        policy_path = latest_policy_onnx(run_dir)
+    record(policy_path, episodes=args.episodes, seconds=args.seconds,
+           fps=args.fps, out_path=args.out, seed=args.seed, standing=args.stand)
 
 
 if __name__ == "__main__":

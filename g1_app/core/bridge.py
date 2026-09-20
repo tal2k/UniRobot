@@ -13,15 +13,19 @@ import numpy as np
 import onnxruntime as ort
 
 try:  # package-relative (pip install / python -m g1_app.cli)
-    from .config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, WORKSPACE, get_local_cfg
+    from .config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, MODELS_DIR, WORKSPACE, get_local_cfg
     from .math import quat_to_projected_gravity
     from .terrains import TERRAINS, resolve_scene
 except ImportError:  # legacy flat sys.path (APP_DIR on sys.path)
-    from core.config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, WORKSPACE, get_local_cfg
+    from core.config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, MODELS_DIR, WORKSPACE, get_local_cfg
     from core.math import quat_to_projected_gravity
     from core.terrains import TERRAINS, resolve_scene
 
 DEFAULT_SCENE = os.path.join(G1_MODEL_DIR, "scene_29dof.xml")
+
+# Curated stand-still policy: download/Colab exports land here, next to the
+# walking policy (LFS-tracked). Training snapshots stay under logs/.
+STAND_POLICY_PATH = os.path.join(MODELS_DIR, "g1_stand_policy.onnx")
 
 # Local 29-DoF config: deploy.yaml is the authority, fallback is built in.
 LOCAL_CFG = get_local_cfg()
@@ -270,9 +274,16 @@ class G1StandPolicy:
 
 
 def find_latest_stand_policy():
-    """Newest trained stand-still snapshot, or None when nothing trained yet."""
+    """Curated stand-still policy if present, else newest training snapshot.
+
+    `g1_app/models/g1_stand_policy.onnx` is the curated home (lives next to
+    the walking policy, versioned via LFS); the logs glob is the scratch
+    fallback for fresh training runs not yet promoted.
+    """
     import glob
 
+    if os.path.isfile(STAND_POLICY_PATH):
+        return STAND_POLICY_PATH
     cands = sorted(glob.glob(os.path.join(
         WORKSPACE, "unitree_rl_mjlab", "logs", "rsl_rl", "g1_stand", "*",
         "policy.onnx")), key=os.path.getmtime)
@@ -411,12 +422,16 @@ class WalkStandBridge:
     mode: "walk" (velocity policy only, legacy behaviour), "stand"
     (balance policy only) or "auto" (nonzero user command walks, zero
     command balances — replaces the anchor/frozen standstill hack).
+    A zero command does NOT hand over mid-stride: the walk policy brakes
+    to ~standstill first (it owns deceleration), and the balance policy
+    only takes over a slow root — the state distribution it trained on.
     On every switch the joint targets cross-fade over blend_s seconds so
     torques never jump.
     """
 
     def __init__(self, mj_model, mj_data, walk_policy_path, stand_policy_path,
-                 sim_dt=0.005, mode="auto", standstill=True, blend_s=0.4):
+                 sim_dt=0.005, mode="auto", standstill=True, blend_s=0.4,
+                 stop_speed=0.12):
         assert mode in ("walk", "stand", "auto")
         self.walk = G1StandPolicy(mj_model, mj_data, walk_policy_path,
                                   sim_dt=sim_dt, standstill=standstill)
@@ -430,6 +445,7 @@ class WalkStandBridge:
         self._prev_target = self._active().target_pos.copy()
         self.default_pos = self.walk.default_pos.copy()
         self.user_command = np.zeros(3, dtype=np.float32)
+        self.stop_speed = float(stop_speed)
         self._sim_steps = 0
         print(f"Mode: walk/stand switch (selected={mode}, active={self.active})")
 
@@ -476,7 +492,17 @@ class WalkStandBridge:
     def _wanted(self):
         if self.mode_sel in ("walk", "stand"):
             return self.mode_sel
-        return "walk" if not np.allclose(self.user_command, 0.0) else "stand"
+        if not np.allclose(self.user_command, 0.0):
+            return "walk"
+        # Zero command: stay on the walk policy until the root is slow.
+        # Handing a mid-stride state to the balance policy (trained from
+        # standing starts) is a guaranteed fall; the walker owns braking.
+        if self.active == "walk" and self._root_speed() > self.stop_speed:
+            return "walk"
+        return "stand"
+
+    def _root_speed(self):
+        return float(np.linalg.norm(self.walk.mj_data.qvel[0:2]))
 
     def step_sim(self):
         wanted = self._wanted()

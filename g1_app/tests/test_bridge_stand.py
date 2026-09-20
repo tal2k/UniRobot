@@ -43,6 +43,26 @@ def test_find_latest_stand_policy():
     assert STAND_POLICY is not None and os.path.isfile(STAND_POLICY)
 
 
+def test_curated_models_policy_wins(monkeypatch, tmp_path):
+    import core.bridge as bridge_mod
+
+    curated = tmp_path / "g1_stand_policy.onnx"
+    curated.write_bytes(b"fake")
+    snap_dir = tmp_path / "logs" / "run"
+    snap_dir.mkdir(parents=True)
+    snap = snap_dir / "policy.onnx"
+    snap.write_bytes(b"fake")
+    # Make the snapshot newer so only the curated-first rule can win.
+    import time
+
+    old, new = time.time() - 100, time.time()
+    os.utime(curated, (old, old))
+    os.utime(snap, (new, new))
+    monkeypatch.setattr(bridge_mod, "STAND_POLICY_PATH", str(curated))
+    monkeypatch.setattr(bridge_mod, "WORKSPACE", str(tmp_path))
+    assert find_latest_stand_policy() == str(curated)
+
+
 @needs_stand_policy
 def test_stand_policy_loads_94dof():
     model, data = _sim()

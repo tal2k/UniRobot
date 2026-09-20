@@ -38,7 +38,8 @@ def _add_common_stand_args(ap: argparse.ArgumentParser):
     ap.add_argument("--scene", default=None, help="MuJoCo scene XML (overrides --terrain)")
     ap.add_argument("--terrain", choices=sorted(TERRAINS), default="flat")
     ap.add_argument("--stand-policy", default=None,
-                    help="Stand-still policy (default: latest g1_stand snapshot)")
+                    help="Stand-still policy (default: models/g1_stand_policy.onnx, "
+                         "else latest g1_stand snapshot)")
     ap.add_argument("--mode", choices=("walk", "stand", "auto"), default="walk",
                     help="walk = velocity policy, stand = balance policy, "
                          "auto = switch on zero command")
@@ -100,11 +101,23 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 def cmd_record(args: argparse.Namespace) -> int:
     from g1_app.lab.record import find_latest_run, latest_policy_onnx, record
 
-    run_dir = args.run_dir or find_latest_run(args.experiment)
-    print(f"run: {run_dir}")
-    record(latest_policy_onnx(run_dir), episodes=args.episodes,
+    if args.policy is not None:
+        policy_path = args.policy
+    else:
+        run_dir = args.run_dir or find_latest_run(args.experiment)
+        print(f"run: {run_dir}")
+        policy_path = latest_policy_onnx(run_dir)
+    record(policy_path, episodes=args.episodes,
            seconds=args.seconds, fps=args.fps, out_path=args.out, seed=args.seed,
            standing=args.stand)
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    from g1_app.lab.export import export_ckpt
+
+    out = args.out or os.path.splitext(args.ckpt)[0] + ".onnx"
+    export_ckpt(args.ckpt, out)
     return 0
 
 
@@ -157,6 +170,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("record", help="headless CPU policy video")
     p.add_argument("--run-dir", default=None)
+    p.add_argument("--policy", default=None,
+                   help="policy.onnx directly (e.g. models/g1_stand_policy.onnx); "
+                        "overrides --run-dir/--experiment lookup")
     p.add_argument("--experiment", default="g1_getup",
                    help="experiment folder under logs/rsl_rl (g1_getup|g1_stand)")
     p.add_argument("--stand", action="store_true",
@@ -170,6 +186,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("terrains", help="regenerate test scenes")
     p.set_defaults(func=cmd_terrains)
+
+    p = sub.add_parser("export", help="RSL-RL .pt checkpoint -> policy.onnx")
+    p.add_argument("--ckpt", required=True, help="training checkpoint (model_*.pt)")
+    p.add_argument("--out", default=None,
+                   help="output .onnx (default: <ckpt-stem>.onnx next to ckpt)")
+    p.set_defaults(func=cmd_export)
 
     p = sub.add_parser("verify", help="model + config + math checks")
     p.set_defaults(func=cmd_verify)
