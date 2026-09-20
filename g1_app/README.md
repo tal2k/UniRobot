@@ -12,11 +12,14 @@ outside this folder except a Python environment with MuJoCo.
 g1 check                 # 10 s GUI self-test (needs display)
 g1 stand --seconds 30    # viewer demo
 g1 gui                   # 3D view + control panel
+g1 gui --mode auto       # walk/stand switching (needs trained stand policy)
 g1 stand --headless --seconds 12   # servers / CI
 g1 stand --terrain slope # pick terrain: flat|rough|slope|steps|obstacles
 g1 train                 # get-up training + dashboard on :6006
+g1 train-stand           # stand-still balance training + dashboard
 g1 dashboard             # dashboard only
 g1 record --episodes 3   # headless CPU video of latest policy
+g1 record -- --experiment g1_stand --stand  # replay stand policy
 g1 terrains              # regenerate test scenes
 g1 verify                # model sha256 + deploy.yaml + math + terrains
 ```
@@ -96,7 +99,11 @@ Opens 3D viewer + **G1 Control** panel:
   without restart. Robot respawns at start pad; sliders preserved.
 - **Status line** — sim time, torso height (~0.78 m), tilt (~0 upright),
   command vector, state: `WALKING`, `STANDING (settling…)`,
-  `STANDING STILL`, or `FELL` (press Reset).
+  `STANDING STILL`, `STANDING (balance policy)`, or `FELL` (press Reset).
+- **Controller dropdown** (only with a trained stand policy, i.e.
+  `g1 gui --mode auto`) — `walk` = velocity policy only, `stand` = trained
+  balance policy only, `auto` = nonzero command walks, zero command balances
+  (no anchor needed; targets cross-fade over ~0.4 s).
 
 ---
 

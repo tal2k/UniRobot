@@ -13,11 +13,11 @@ import numpy as np
 import onnxruntime as ort
 
 try:  # package-relative (pip install / python -m g1_app.cli)
-    from .config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, get_local_cfg
+    from .config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, WORKSPACE, get_local_cfg
     from .math import quat_to_projected_gravity
     from .terrains import TERRAINS, resolve_scene
 except ImportError:  # legacy flat sys.path (APP_DIR on sys.path)
-    from core.config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, get_local_cfg
+    from core.config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, WORKSPACE, get_local_cfg
     from core.math import quat_to_projected_gravity
     from core.terrains import TERRAINS, resolve_scene
 
@@ -269,6 +269,248 @@ class G1StandPolicy:
         return h, tilt, self.user_command, self.stand_state
 
 
+def find_latest_stand_policy():
+    """Newest trained stand-still snapshot, or None when nothing trained yet."""
+    import glob
+
+    cands = sorted(glob.glob(os.path.join(
+        WORKSPACE, "unitree_rl_mjlab", "logs", "rsl_rl", "g1_stand", "*",
+        "policy.onnx")), key=os.path.getmtime)
+    return cands[-1] if cands else None
+
+
+def _csv_meta(session, key):
+    for k, v in session.get_modelmeta().custom_metadata_map.items():
+        if k == key:
+            return [x for x in v.split(",") if x != ""]
+    return []
+
+
+class StandStillPolicy:
+    """94-dim in-place balance policy (trained by `g1 train-stand`).
+
+    Observation layout (actor): gyro 3 + projected gravity 3 + base height 1
+    + (q - q0) 29 + qvel 29 + last action 29. No velocity command, no gait
+    phase — balance is reactive, not steered or rhythmic. Gains, nominal
+    pose and joint order come from the ONNX metadata (self-describing),
+    joints are mapped by name so policy/MuJoCo order need not match.
+    """
+
+    STEP_DT = 0.02  # 50 Hz, matches training decimation
+
+    def __init__(self, mj_model, mj_data, policy_path, sim_dt=0.005):
+        self.mj_model = mj_model
+        self.mj_data = mj_data
+        self.num_motor = mj_model.nu
+        assert self.num_motor == 29, f"expected 29 G1 motors, got {self.num_motor}"
+
+        if not os.path.isfile(policy_path):
+            raise FileNotFoundError(f"stand policy not found: {policy_path}")
+        self.session = ort.InferenceSession(policy_path, providers=["CPUExecutionProvider"])
+        self.input_names = [i.name for i in self.session.get_inputs()]
+        self.obs_dim = self.session.get_inputs()[0].shape[1]
+        if self.obs_dim != 94:
+            raise ValueError(f"stand policy obs dim {self.obs_dim}, expected 94")
+
+        meta = self.session.get_modelmeta().custom_metadata_map
+        _ = meta  # metadata access goes through _csv_meta for missing-key safety
+        self.joint_names = _csv_meta(self.session, "joint_names")
+        assert len(self.joint_names) == 29, "stand policy metadata lacks joint_names"
+        self.default_pos = np.array(
+            [float(v) for v in _csv_meta(self.session, "default_joint_pos")],
+            dtype=np.float32)
+        self.kp = np.array(
+            [float(v) for v in _csv_meta(self.session, "joint_stiffness")],
+            dtype=np.float32)
+        self.kd = np.array(
+            [float(v) for v in _csv_meta(self.session, "joint_damping")],
+            dtype=np.float32)
+        self.action_scale = np.array(
+            [float(v) for v in _csv_meta(self.session, "action_scale")],
+            dtype=np.float32)
+        assert len(self.default_pos) == 29 and len(self.kp) == 29
+
+        # Policy joint i lives at these offsets inside qpos[7:] / qvel[6:].
+        self.qpos_idx, self.qvel_idx = [], []
+        for jn in self.joint_names:
+            jid = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_JOINT, jn)
+            assert jid >= 0, f"joint {jn} not in scene"
+            self.qpos_idx.append(self.mj_model.jnt_qposadr[jid])
+            self.qvel_idx.append(self.mj_model.jnt_dofadr[jid])
+        self.muj_q = np.array(self.qpos_idx) - 7
+        self.muj_v = np.array(self.qvel_idx) - 6
+
+        m = mj_model
+        self.imu_gyro_adr = m.sensor_adr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, "imu_gyro")]
+        self.imu_quat_adr = m.sensor_adr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, "imu_quat")]
+
+        self.last_action = np.zeros(29, dtype=np.float32)
+        self.target_pos = self.default_pos.copy()
+        self.user_command = np.zeros(3, dtype=np.float32)
+        self.mode = "stand94"
+        self.sim_dt = sim_dt
+        self.decimation = max(1, int(round(self.STEP_DT / self.sim_dt)))
+        self._sim_steps = 0
+        print("Mode: stand-still 94-dim balance policy "
+              f"(50 Hz, sim {1.0 / self.sim_dt:.0f} Hz, decimation {self.decimation})")
+
+    def set_command(self, vx, vy, wz):
+        # Stored for telemetry/switch decisions; the policy itself takes none.
+        self.user_command = np.array([vx, vy, wz], dtype=np.float32)
+
+    def _base_state(self):
+        gyro = np.array(self.mj_data.sensordata[self.imu_gyro_adr:self.imu_gyro_adr + 3],
+                        dtype=np.float32)
+        quat = np.array(self.mj_data.sensordata[self.imu_quat_adr:self.imu_quat_adr + 4],
+                        dtype=np.float32)
+        grav = quat_to_projected_gravity(quat)
+        qpos = np.array(self.mj_data.qpos[7:7 + self.num_motor], dtype=np.float32)
+        qvel = np.array(self.mj_data.qvel[6:6 + self.num_motor], dtype=np.float32)
+        return gyro, grav, qpos, qvel
+
+    def observe(self):
+        gyro, grav, _, _ = self._base_state()
+        q = np.array(self.mj_data.qpos[7:][self.muj_q], dtype=np.float32)
+        v = np.array(self.mj_data.qvel[6:][self.muj_v], dtype=np.float32)
+        h = np.array([float(self.mj_data.qpos[2])], dtype=np.float32)
+        return np.concatenate([gyro, grav, h, q - self.default_pos, v,
+                               self.last_action]).astype(np.float32)
+
+    def update_policy(self):
+        obs = self.observe().reshape(1, -1)
+        action = self.session.run(None, {self.input_names[0]: obs})[0].flatten()
+        self.last_action = action.astype(np.float32)
+        self.target_pos = self.default_pos + self.last_action * self.action_scale
+        return self.last_action
+
+    def apply_pd(self):
+        qpos = np.array(self.mj_data.qpos[7:7 + self.num_motor], dtype=np.float32)
+        qvel = np.array(self.mj_data.qvel[6:6 + self.num_motor], dtype=np.float32)
+        torque = self.kp * (self.target_pos - qpos) - self.kd * qvel
+        for i in range(self.num_motor):
+            lo, hi = self.mj_model.actuator_ctrlrange[i]
+            self.mj_data.ctrl[i] = float(np.clip(torque[i], lo, hi))
+
+    def step_sim(self):
+        do_policy = (self._sim_steps % self.decimation == 0)
+        action = self.update_policy() if do_policy else None
+        self.apply_pd()
+        self._sim_steps += 1
+        return action
+
+    def telemetry(self):
+        h = float(self.mj_data.qpos[2])
+        _, grav, _, _ = self._base_state()
+        tilt = float(np.linalg.norm(grav[:2]))
+        return h, tilt, self.user_command, "stand"
+
+
+class WalkStandBridge:
+    """Velocity walking + stand-still balance with cross-faded switching.
+
+    mode: "walk" (velocity policy only, legacy behaviour), "stand"
+    (balance policy only) or "auto" (nonzero user command walks, zero
+    command balances — replaces the anchor/frozen standstill hack).
+    On every switch the joint targets cross-fade over blend_s seconds so
+    torques never jump.
+    """
+
+    def __init__(self, mj_model, mj_data, walk_policy_path, stand_policy_path,
+                 sim_dt=0.005, mode="auto", standstill=True, blend_s=0.4):
+        assert mode in ("walk", "stand", "auto")
+        self.walk = G1StandPolicy(mj_model, mj_data, walk_policy_path,
+                                  sim_dt=sim_dt, standstill=standstill)
+        self.stand = StandStillPolicy(mj_model, mj_data, stand_policy_path,
+                                      sim_dt=sim_dt)
+        self._standstill = standstill
+        self.mode_sel = mode
+        self.active = "stand" if mode == "stand" else "walk"
+        self.blend_s = blend_s
+        self._blend = 1.0
+        self._prev_target = self._active().target_pos.copy()
+        self.default_pos = self.walk.default_pos.copy()
+        self.user_command = np.zeros(3, dtype=np.float32)
+        self._sim_steps = 0
+        print(f"Mode: walk/stand switch (selected={mode}, active={self.active})")
+
+    def _active(self):
+        return self.stand if self.active == "stand" else self.walk
+
+    @property
+    def mode(self):
+        return f"walk+stand({self.active})"
+
+    @property
+    def last_action(self):
+        return self._active().last_action
+
+    @property
+    def phase(self):
+        return self.walk.phase
+
+    @phase.setter
+    def phase(self, value):
+        self.walk.phase = value
+
+    @property
+    def standstill(self):
+        return self._standstill
+
+    @standstill.setter
+    def standstill(self, value):
+        self._standstill = bool(value)
+        self.walk.standstill = bool(value)
+
+    def _base_state(self):
+        return self.walk._base_state()
+
+    def set_command(self, vx, vy, wz):
+        self.user_command = np.array([vx, vy, wz], dtype=np.float32)
+        self.walk.set_command(vx, vy, wz)
+        self.stand.set_command(vx, vy, wz)
+
+    def set_mode(self, mode):
+        assert mode in ("walk", "stand", "auto")
+        self.mode_sel = mode
+
+    def _wanted(self):
+        if self.mode_sel in ("walk", "stand"):
+            return self.mode_sel
+        return "walk" if not np.allclose(self.user_command, 0.0) else "stand"
+
+    def step_sim(self):
+        wanted = self._wanted()
+        if wanted != self.active:
+            self._prev_target = self._blended_target().copy()
+            self.active = wanted
+            self._blend = 0.0
+        policy = self._active()
+        action = policy.step_sim()
+        if self._blend < 1.0:
+            n = max(1, int(round(self.blend_s / policy.sim_dt)))
+            self._blend = min(1.0, self._blend + 1.0 / n)
+            policy.target_pos = self._blended_target()
+        policy.apply_pd()
+        self._sim_steps += 1
+        return action
+
+    def _blended_target(self):
+        a = self._blend
+        return ((1.0 - a) * self._prev_target + a * self._active().target_pos
+                ).astype(np.float32)
+
+    def apply_pd(self):
+        self._active().apply_pd()
+
+    def telemetry(self):
+        h = float(self.walk.mj_data.qpos[2])
+        _, grav, _, _ = self.walk._base_state()
+        tilt = float(np.linalg.norm(grav[:2]))
+        if self.active == "stand":
+            return h, tilt, self.user_command, "stand"
+        return h, tilt, self.user_command, self.walk.stand_state
+
+
 def reset_standing(mj_model, mj_data, default_pos, height=0.78):
     mj_data.qpos[0] = 0.0
     mj_data.qpos[1] = 0.0
@@ -282,13 +524,24 @@ def reset_standing(mj_model, mj_data, default_pos, height=0.78):
 
 def run_stand(policy_path=DEFAULT_LOCAL_POLICY, scene=DEFAULT_SCENE,
               seconds=10.0, sim_dt=0.005, headless=False, log_hz=2.0,
-              standstill=True):
+              standstill=True, stand_policy_path=None, mode="walk"):
     mj_model = mujoco.MjModel.from_xml_path(scene)
     mj_model.opt.timestep = sim_dt
     mj_data = mujoco.MjData(mj_model)
 
-    bridge = G1StandPolicy(mj_model, mj_data, policy_path, sim_dt=sim_dt,
-                           standstill=standstill)
+    if mode in ("stand", "auto"):
+        if stand_policy_path is None:
+            stand_policy_path = find_latest_stand_policy()
+        if stand_policy_path is None:
+            raise FileNotFoundError(
+                "no stand policy: pass --stand-policy or train one "
+                "(`g1 train-stand`)")
+        bridge = WalkStandBridge(mj_model, mj_data, policy_path,
+                                 stand_policy_path, sim_dt=sim_dt, mode=mode,
+                                 standstill=standstill)
+    else:
+        bridge = G1StandPolicy(mj_model, mj_data, policy_path, sim_dt=sim_dt,
+                               standstill=standstill)
     reset_standing(mj_model, mj_data, bridge.default_pos)
 
     viewer = None
@@ -345,8 +598,14 @@ if __name__ == "__main__":
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--no-standstill", action="store_true",
                     help="Disable position lock: zero command marches in place")
+    ap.add_argument("--stand-policy", default=None,
+                    help="Stand-still policy (default: latest g1_stand snapshot)")
+    ap.add_argument("--mode", choices=("walk", "stand", "auto"), default="walk",
+                    help="walk = velocity policy, stand = balance policy, "
+                         "auto = switch on zero command")
     args = ap.parse_args()
     scene = resolve_scene(args.terrain, args.scene)
     ok = run_stand(args.policy, scene, args.seconds, args.sim_dt,
-                   args.headless, standstill=not args.no_standstill)
+                   args.headless, standstill=not args.no_standstill,
+                   stand_policy_path=args.stand_policy, mode=args.mode)
     raise SystemExit(0 if ok else 1)

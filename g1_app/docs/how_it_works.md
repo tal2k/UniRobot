@@ -14,3 +14,16 @@ Classic learned-locomotion stack: ONNX policy proposes joint targets at
 
 Fixed bugs worth knowing: gravity sign was inverted; PD ran at policy rate.
 Both fixed in `core/bridge.py`. Telemetry for GUIs: `bridge.telemetry()`.
+
+# Walk/stand switching (trained balance policy)
+
+`core/bridge.py` `StandStillPolicy` runs the 94-dim policy from
+`g1 train-stand`: gyro 3 + gravity 3 + height 1 + (q-q0) 29 + qvel 29 +
+last action 29. No command, no gait phase. Gains/pose/joint order come
+from the ONNX metadata; joints map by name.
+
+`WalkStandBridge` holds both policies: `--mode walk` (legacy velocity
+only), `--mode stand` (balance only), `--mode auto` (nonzero command
+walks, zero command balances — no anchor needed). Switches cross-fade
+joint targets over ~0.4 s. `--stand-policy` overrides the path; default
+is the latest `g1_stand` snapshot (`find_latest_stand_policy()`).

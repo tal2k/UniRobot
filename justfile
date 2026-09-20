@@ -18,6 +18,9 @@ gui *ARGS:
 train *ARGS:
   {{py}} -m g1_app.cli train -- {{ARGS}}
 
+train-stand *ARGS:
+  {{py}} -m g1_app.cli train-stand -- {{ARGS}}
+
 dashboard *ARGS:
   {{py}} -m g1_app.cli dashboard {{ARGS}}
 

@@ -1,0 +1,85 @@
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "unitree_rl_mjlab",
+))
+
+import mujoco
+import numpy as np
+
+from core.bridge import (
+    DEFAULT_LOCAL_POLICY,
+    StandStillPolicy,
+    WalkStandBridge,
+    find_latest_stand_policy,
+    reset_standing,
+)
+from core.config import G1_MODEL_DIR
+
+
+def _stand_policy_path():
+    return find_latest_stand_policy()
+
+
+STAND_POLICY = _stand_policy_path() or find_latest_stand_policy()
+
+needs_stand_policy = pytest.mark.skipif(
+    STAND_POLICY is None, reason="no trained g1_stand snapshot yet")
+
+
+def _sim():
+    model = mujoco.MjModel.from_xml_path(os.path.join(G1_MODEL_DIR, "scene_29dof.xml"))
+    model.opt.timestep = 0.005
+    return model, mujoco.MjData(model)
+
+
+@needs_stand_policy
+def test_find_latest_stand_policy():
+    assert STAND_POLICY is not None and os.path.isfile(STAND_POLICY)
+
+
+@needs_stand_policy
+def test_stand_policy_loads_94dof():
+    model, data = _sim()
+    pol = StandStillPolicy(model, data, STAND_POLICY)
+    assert pol.obs_dim == 94
+    assert pol.observe().shape == (94,)
+    assert len(pol.joint_names) == 29
+
+
+@needs_stand_policy
+def test_stand_policy_headless_steps():
+    model, data = _sim()
+    pol = StandStillPolicy(model, data, STAND_POLICY)
+    reset_standing(model, data, pol.default_pos)
+    for _ in range(200):
+        mujoco.mj_step(model, data)
+        pol.step_sim()
+    assert np.all(np.isfinite(data.qpos))
+    assert float(data.qpos[2]) > 0.5
+
+
+@needs_stand_policy
+def test_walk_stand_auto_switch():
+    model, data = _sim()
+    bridge = WalkStandBridge(model, data, DEFAULT_LOCAL_POLICY, STAND_POLICY,
+                             mode="auto")
+    reset_standing(model, data, bridge.default_pos)
+    bridge.set_command(0.4, 0.0, 0.0)
+    for _ in range(400):
+        mujoco.mj_step(model, data)
+        bridge.step_sim()
+    assert bridge.active == "walk"
+    bridge.set_command(0.0, 0.0, 0.0)
+    for _ in range(600):
+        mujoco.mj_step(model, data)
+        bridge.step_sim()
+    assert bridge.active == "stand"
+    assert bridge._blend == 1.0
+    assert np.all(np.isfinite(data.qpos))
+    assert float(data.qpos[2]) > 0.45

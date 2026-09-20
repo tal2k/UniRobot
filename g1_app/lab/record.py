@@ -116,6 +116,16 @@ class GetupRollout:
     data.ctrl[:] = 0.0
     mujoco.mj_forward(self.model, data)
 
+  def reset_standing(self, data):
+    data.qpos[0:2] = self.rng.uniform(-0.05, 0.05, 2)
+    data.qpos[2] = float(self.rng.uniform(0.76, 0.80))
+    data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+    data.qpos[7:][self.muj_q] = (
+      self.default_pos + self.rng.uniform(-0.05, 0.05, len(self.default_pos)))
+    data.qvel[:] = 0.0
+    data.ctrl[:] = 0.0
+    mujoco.mj_forward(self.model, data)
+
   def observe(self, data):
     gyro = np.array(data.sensordata[self.imu_gyro_adr:self.imu_gyro_adr + 3], dtype=np.float32)
     quat = np.array(data.sensordata[self.imu_quat_adr:self.imu_quat_adr + 4], dtype=np.float32)
@@ -150,18 +160,18 @@ def latest_policy_onnx(run_dir):
   return p
 
 
-def find_latest_run():
+def find_latest_run(experiment="g1_getup"):
   cands = sorted(glob.glob(os.path.join(
-    WORKSPACE, "unitree_rl_mjlab", "logs", "rsl_rl", "g1_getup", "*")),
+    WORKSPACE, "unitree_rl_mjlab", "logs", "rsl_rl", experiment, "*")),
     key=os.path.getmtime)
   cands = [c for c in cands if os.path.isfile(os.path.join(c, "policy.onnx"))]
   if not cands:
-    raise FileNotFoundError("no trained get-up snapshots found yet")
+    raise FileNotFoundError(f"no trained snapshots found for {experiment} yet")
   return cands[-1]
 
 
 def record(policy_path, episodes=3, seconds=8.0, fps=20, width=480, height=360,
-           out_path=None, seed=0):
+           out_path=None, seed=0, standing=False):
   os.environ.setdefault("MUJOCO_GL", "egl")
   roller = GetupRollout(policy_path, seed=seed)
   data = mujoco.MjData(roller.model)
@@ -173,13 +183,17 @@ def record(policy_path, episodes=3, seconds=8.0, fps=20, width=480, height=360,
              "recorded_at": time.time(), "episodes": []}
   if out_path is None:
     tag = f"{os.path.basename(os.path.dirname(policy_path))}_{int(ckpt_mtime)}"
-    out_path = os.path.join(VIDEOS_DIR, f"getup_{tag}.mp4")
+    prefix = "stand" if standing else "getup"
+    out_path = os.path.join(VIDEOS_DIR, f"{prefix}_{tag}.mp4")
   os.makedirs(VIDEOS_DIR, exist_ok=True)
 
   writer = imageio.get_writer(out_path, fps=fps, codec="libx264", quality=7)
   try:
     for ep in range(episodes):
-      roller.reset_fallen(data)
+      if standing:
+        roller.reset_standing(data)
+      else:
+        roller.reset_fallen(data)
       roller.last_action = np.zeros_like(roller.last_action)
       target = roller.default_pos.copy()
       min_h, max_h, tilt_end = 1e9, 0.0, 1.0
@@ -215,18 +229,22 @@ def record(policy_path, episodes=3, seconds=8.0, fps=20, width=480, height=360,
 
 
 def main():
-  ap = argparse.ArgumentParser(description="Record latest get-up policy (CPU, headless)")
+  ap = argparse.ArgumentParser(description="Record latest policy (CPU, headless)")
   ap.add_argument("--run-dir", default=None)
+  ap.add_argument("--experiment", default="g1_getup",
+                  help="Experiment folder under logs/rsl_rl (g1_getup|g1_stand)")
+  ap.add_argument("--stand", action="store_true",
+                  help="Start episodes standing (for stand policy) not fallen")
   ap.add_argument("--episodes", type=int, default=3)
   ap.add_argument("--seconds", type=float, default=8.0)
   ap.add_argument("--fps", type=int, default=20)
   ap.add_argument("--out", default=None)
   ap.add_argument("--seed", type=int, default=0)
   args = ap.parse_args()
-  run_dir = args.run_dir or find_latest_run()
+  run_dir = args.run_dir or find_latest_run(args.experiment)
   print(f"run: {run_dir}")
   record(latest_policy_onnx(run_dir), episodes=args.episodes, seconds=args.seconds,
-         fps=args.fps, out_path=args.out, seed=args.seed)
+         fps=args.fps, out_path=args.out, seed=args.seed, standing=args.stand)
 
 
 if __name__ == "__main__":

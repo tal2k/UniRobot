@@ -1,9 +1,11 @@
-"""One-command G1 get-up training + live dashboard. Owned by the G1 app.
+"""One-command G1 training + live dashboard. Owned by the G1 app.
 
 Canonical home (moved from legacy train_getup.py). Prefer:
 
-    g1 train
-    g1 train --num-envs 1024 --max-iterations 2000
+    g1 train                        # get-up policy (default)
+    g1 train -- --task stand        # stand-still balance policy
+    g1 train-stand -- --num-envs 1024
+    g1 train -- --num-envs 1024 --max-iterations 2000
 """
 
 import argparse
@@ -18,7 +20,10 @@ LAB_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.dirname(LAB_DIR)
 WORKSPACE = os.path.dirname(APP_DIR)
 RL_MJLAB_DIR = os.path.join(WORKSPACE, "unitree_rl_mjlab")
-TASK_ID = "Unitree-G1-Getup"
+TASK_IDS = {
+  "getup": "Unitree-G1-Getup",
+  "stand": "Unitree-G1-Stand",
+}
 
 
 def port_in_use(port: int) -> bool:
@@ -39,7 +44,9 @@ def load_train_module():
 
 
 def main() -> int:
-  ap = argparse.ArgumentParser(description="Train G1 get-up policy + dashboard")
+  ap = argparse.ArgumentParser(description="Train G1 get-up/stand policy + dashboard")
+  ap.add_argument("--task", choices=sorted(TASK_IDS), default="getup",
+                  help="Which policy to train (default: getup)")
   ap.add_argument("--num-envs", type=int, default=2048,
                   help="Parallel sim environments (fewer for small GPUs)")
   ap.add_argument("--max-iterations", type=int, default=None,
@@ -90,10 +97,12 @@ def main() -> int:
     import mjlab.tasks  # noqa: F401
     import src.tasks  # noqa: F401
 
-    import training.getup.config.g1  # noqa: F401  (registers TASK_ID)
+    import training.getup.config.g1  # noqa: F401  (registers Unitree-G1-Getup)
+    import training.stand.config.g1  # noqa: F401  (registers Unitree-G1-Stand)
 
     train_mod = load_train_module()
-    cfg = train_mod.TrainConfig.from_task(TASK_ID)
+    task_id = TASK_IDS[args.task]
+    cfg = train_mod.TrainConfig.from_task(task_id)
     cfg.agent.logger = "tensorboard"
     cfg.env.scene.num_envs = args.num_envs
     if args.max_iterations is not None:
@@ -106,11 +115,11 @@ def main() -> int:
       if args.run_name is not None:
         cfg.agent.load_run = f".*{args.run_name}.*"
 
-    print(f"[all] Training {TASK_ID}: {args.num_envs} envs, "
+    print(f"[all] Training {task_id}: {args.num_envs} envs, "
           f"{cfg.agent.max_iterations} iterations", flush=True)
     print(f"[all] Watch Episode_Reward/stand_success at "
           f"http://localhost:{args.port}/", flush=True)
-    train_mod.launch_training(TASK_ID, cfg)
+    train_mod.launch_training(task_id, cfg)
     print("[all] Training finished.")
     return 0
   except KeyboardInterrupt:

@@ -15,15 +15,32 @@ import mujoco.viewer
 import numpy as np
 
 try:
-    from g1_app.core.bridge import DEFAULT_LOCAL_POLICY, G1StandPolicy, reset_standing
+    from g1_app.core.bridge import (
+        DEFAULT_LOCAL_POLICY,
+        G1StandPolicy,
+        WalkStandBridge,
+        find_latest_stand_policy,
+        reset_standing,
+    )
     from g1_app.core.terrains import TERRAINS
 except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     try:
-        from core.bridge import DEFAULT_LOCAL_POLICY, G1StandPolicy, reset_standing
+        from core.bridge import (
+            DEFAULT_LOCAL_POLICY,
+            G1StandPolicy,
+            WalkStandBridge,
+            find_latest_stand_policy,
+            reset_standing,
+        )
         from core.terrains import TERRAINS
     except ImportError:
         from g1_stand_onnx import DEFAULT_LOCAL_POLICY, TERRAINS, G1StandPolicy, reset_standing
+
+        WalkStandBridge = None
+
+        def find_latest_stand_policy():  # noqa: D103
+            return None
 
 import tkinter as tk
 
@@ -32,8 +49,11 @@ CMD_RANGES = {"vx": (-0.5, 1.0), "vy": (-0.5, 0.5), "wz": (-1.0, 1.0)}
 
 
 class G1Gui:
-    def __init__(self, policy=DEFAULT_LOCAL_POLICY, scene=None, terrain="flat"):
+    def __init__(self, policy=DEFAULT_LOCAL_POLICY, scene=None, terrain="flat",
+                 stand_policy=None, mode="walk"):
         self.policy_path = policy
+        self.stand_policy_path = stand_policy or find_latest_stand_policy()
+        self.policy_mode = mode
         self.viewer = None
         self._load_scene(scene or TERRAINS.get(terrain, TERRAINS["flat"]))
 
@@ -53,8 +73,13 @@ class G1Gui:
         self.mj_model = mujoco.MjModel.from_xml_path(scene_path)
         self.mj_model.opt.timestep = SIM_DT
         self.mj_data = mujoco.MjData(self.mj_model)
-        self.bridge = G1StandPolicy(self.mj_model, self.mj_data, self.policy_path,
-                                    sim_dt=SIM_DT)
+        if self.stand_policy_path is not None and WalkStandBridge is not None:
+            self.bridge = WalkStandBridge(
+                self.mj_model, self.mj_data, self.policy_path,
+                self.stand_policy_path, sim_dt=SIM_DT, mode=self.policy_mode)
+        else:
+            self.bridge = G1StandPolicy(self.mj_model, self.mj_data, self.policy_path,
+                                        sim_dt=SIM_DT)
         self.bridge.standstill = getattr(self, "standstill_var", None) is None or \
             self.standstill_var.get()
         reset_standing(self.mj_model, self.mj_data, self.bridge.default_pos, height=0.78)
@@ -106,6 +131,16 @@ class G1Gui:
                        variable=self.standstill_var,
                        command=lambda: setattr(self.bridge, "standstill",
                                                self.standstill_var.get())).pack(pady=(0, 4))
+
+        if WalkStandBridge is not None and isinstance(self.bridge, WalkStandBridge):
+            mrow = tk.Frame(self.root)
+            mrow.pack(fill="x", padx=8, pady=2)
+            tk.Label(mrow, text="Controller", width=14, anchor="w").pack(side="left")
+            self.mode_var = tk.StringVar(value=self.bridge.mode_sel)
+            tk.OptionMenu(mrow, self.mode_var, "walk", "stand", "auto",
+                          command=lambda m: self.bridge.set_mode(m)).pack(side="left")
+            tk.Label(mrow, text="(auto: zero cmd → stand policy)",
+                     fg="gray").pack(side="left", padx=6)
 
         trow = tk.Frame(self.root)
         trow.pack(fill="x", padx=8, pady=2)
@@ -180,7 +215,8 @@ class G1Gui:
             state = "WALKING"
         else:
             state = {"hold": "STANDING (settling…)", "frozen": "STANDING STILL",
-                     "walk": "STANDING"}.get(stand_state, "STANDING")
+                      "walk": "STANDING",
+                      "stand": "STANDING (balance policy)"}.get(stand_state, "STANDING")
         self.fell = state.startswith("FELL")
         self.status.config(
             text=f"t={self.sim_steps * SIM_DT:6.1f}s  height={h:.2f}m  tilt={tilt:.2f}\n"
@@ -202,4 +238,7 @@ if __name__ == "__main__":
     ap.add_argument("--policy", default=DEFAULT_LOCAL_POLICY)
     ap.add_argument("--scene", default=None, help="MuJoCo scene XML (overrides --terrain)")
     ap.add_argument("--terrain", choices=sorted(TERRAINS), default="flat")
+    ap.add_argument("--stand-policy", default=None,
+                    help="Stand-still policy (default: latest g1_stand snapshot)")
+    ap.add_argument("--mode", choices=("walk", "stand", "auto"), default="walk")
     G1Gui(**vars(ap.parse_args())).run()

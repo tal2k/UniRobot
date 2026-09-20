@@ -87,7 +87,7 @@ METRICS = {
     "Jerkiness penalty",
     "Negative — punishes twitchy motion. Should settle near zero, not plunge.",
   ),
-  "Mean reward": (
+  "Train/mean_reward": (
     "Total reward",
     "Everything added together per episode. Overall direction of learning.",
   ),
@@ -103,10 +103,45 @@ METRICS = {
     "Vertical CoM velocity",
     "Reward for positive vertical CoM velocity (exp kernel). Directly shapes the rising motion — the agent gets immediate gradient when its centre of mass moves up, blocking head-down / butt-up shortcuts.",
   ),
+  "Episode_Reward/stand_still": (
+    "Standing still",
+    "Reward for a quiet root (low body velocity, max 1.0). Recovery steps are "
+    "allowed — only root motion counts, not foot movement.",
+  ),
 }
 
 LIVE_STALE_S = 90  # no new data for this long -> training considered stopped
 MAX_POINTS = 400
+
+# Same tag, different story: when a stand run is selected, these replace the
+# get-up-flavoured names/explanations in the chart legends.
+STAND_METRIC_OVERRIDES = {
+  "Episode_Reward/stand_success": (
+    "Balance success",
+    "Bonus for staying tall, upright and supported by both feet through "
+    "shoves (max 5.0). When it climbs toward 5 and stays there, the robot "
+    "can stand through pushes.",
+  ),
+  "Episode_Reward/stand_height": (
+    "Standing height",
+    "How close the torso stays to full standing height. Dips mark crouches "
+    "and dips during shoves.",
+  ),
+  "Episode_Reward/upright": (
+    "Torso upright",
+    "How level the torso stays. Dips when a shove tilts the body.",
+  ),
+  "Episode_Reward/stand_on_feet": (
+    "Supported standing",
+    "Tall + upright + weight on both feet at once. The stayed-standing "
+    "detector.",
+  ),
+  "Episode_Reward/feet_force": (
+    "Weight on feet",
+    "Foot-ground force while standing. The dense signal that the load is on "
+    "the feet.",
+  ),
+}
 
 
 def _load_yaml(path):
@@ -275,8 +310,9 @@ def _record_job(run_id):
       chosen = run_id
     else:
       chosen = record_getup.find_latest_run()
+    standing = "g1_stand" in chosen
     record_getup.record(record_getup.latest_policy_onnx(chosen),
-                        episodes=3, seconds=8.0)
+                        episodes=3, seconds=8.0, standing=standing)
     with REC_LOCK:
       REC_JOB.update(state="done")
   except Exception as e:  # noqa: BLE001 - surfaced in the UI
@@ -298,9 +334,11 @@ def record_job_status():
 def status_payload(want_run=None):
   runs = [{"id": d, "name": os.path.relpath(d, LOG_ROOT)} for d in STORE.runs()]
   if not runs:
-    return {"runs": [], "run": None, "video": latest_video_info(),
+    return {"runs": [], "run": None, "task": None, "video": latest_video_info(),
             "record_job": record_job_status()}
   run_id = want_run if any(r["id"] == want_run for r in runs) else runs[0]["id"]
+  task = "stand" if "g1_stand" in run_id else ("getup" if "g1_getup" in run_id
+                                              else "other")
   desc = STORE.describe(run_id)
   age = desc.get("last_event_age_s")
   live = age is not None and age < LIVE_STALE_S
@@ -310,9 +348,14 @@ def status_payload(want_run=None):
   eta_s = None
   if desc.get("max_iterations") and desc.get("iters_per_s"):
     eta_s = max(0.0, (desc["max_iterations"] - it) / desc["iters_per_s"])
+  metric_help = {t: {"name": n, "help": h} for t, (n, h) in METRICS.items()}
+  if task == "stand":
+    for t, (n, h) in STAND_METRIC_OVERRIDES.items():
+      metric_help[t] = {"name": n, "help": h}
   return {
     "runs": runs,
     "run": {"id": run_id, "name": os.path.relpath(run_id, LOG_ROOT)},
+    "task": task,
     "live": live,
     "age_s": age,
     "iteration": it,
@@ -323,7 +366,7 @@ def status_payload(want_run=None):
     "max_iterations": desc.get("max_iterations"),
     "num_envs": desc.get("num_envs"),
     "metrics": desc["metrics"],
-    "metric_help": {t: {"name": n, "help": h} for t, (n, h) in METRICS.items()},
+    "metric_help": metric_help,
     "video": latest_video_info(run_id),
     "record_job": record_job_status(),
   }
@@ -344,7 +387,7 @@ video{width:100%;border-radius:8px;background:#000}
 button{font-size:14px;padding:6px 14px;cursor:pointer}
 h1{font-size:24px}h2{font-size:17px;margin:6px 0}
 </style></head><body>
-<h1>G1 get-up training <span id="pill" class="pill idle">…</span></h1>
+<h1><span id="title">G1 training</span> <span id="pill" class="pill idle">…</span></h1>
 <div class="card"><label>Run: <select id="runs"></select></label>
 <span id="liveage" class="lbl"></span></div>
 <div class="card"><div class="grid" id="stats"></div></div>
@@ -355,14 +398,14 @@ h1{font-size:24px}h2{font-size:17px;margin:6px 0}
 <span id="recstat" class="lbl"></span></div>
 <div class="help">Records the newest saved policy (3 episodes from random falls, CPU-only —
 safe to run while training continues). A new snapshot lands every ~100 training iterations.</div></div>
-<div class="card"><h2>Stand-up success <span class="lbl">(the money chart)</span></h2>
+<div class="card"><h2><span id="moneytitle">Stand-up success</span> <span class="lbl">(the money chart)</span></h2>
 <canvas id="c0" width="900" height="180"></canvas><div class="help" id="h0"></div></div>
 <div class="card"><h2>Shaping rewards</h2>
 <canvas id="c1" width="900" height="180"></canvas><div class="help" id="h1"></div></div>
 <div class="card"><h2>Total reward</h2>
 <canvas id="c2" width="900" height="180"></canvas><div class="help" id="h2"></div></div>
 <script>
-const GROUPS=[["Episode_Reward/stand_success"],["Episode_Reward/stand_height","Episode_Reward/upright","Episode_Reward/stand_on_feet","Episode_Reward/feet_force"],["Mean reward"],["Episode_Reward/bad_support"],["Episode_Reward/no_head_contact"],["Episode_Reward/pelvis_rising"],["Episode_Reward/com_vel_z"]];
+const GROUPS=[["Episode_Reward/stand_success"],["Episode_Reward/stand_height","Episode_Reward/upright","Episode_Reward/stand_on_feet","Episode_Reward/feet_force","Episode_Reward/stand_still"],["Train/mean_reward"],["Episode_Reward/bad_support"],["Episode_Reward/no_head_contact"],["Episode_Reward/pelvis_rising"],["Episode_Reward/com_vel_z"]];
 const COLORS=["#1a9e4b","#2563eb","#d97706","#7c3aed","#dc2626"];
 const HELP={};
 function fmtT(s){if(s==null||!isFinite(s))return "–";s=Math.floor(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return (h?h+"h ":"")+m+"m "+(s%60)+"s";}
@@ -391,15 +434,24 @@ async function tick(){
   const v=r.video,vid=document.getElementById("vid");
   if(v&&v.url){
     if(vid.dataset.src!==v.url){vid.dataset.src=v.url;vid.src=v.url;}
-    document.getElementById("vstat").textContent=`${v.stood_up} episodes ended standing · ${v.episodes} falls recorded · video from ${fmtAgo(v.recorded_at)}`;
+    document.getElementById("vstat").textContent=(r.task==="stand")
+      ?`${v.stood_up} episodes stayed standing · ${v.episodes} recorded · video from ${fmtAgo(v.recorded_at)}`
+      :`${v.stood_up} episodes ended standing · ${v.episodes} falls recorded · video from ${fmtAgo(v.recorded_at)}`;
   } else {
     document.getElementById("vstat").textContent="No recording yet — press “Record fresh video”.";
   }
   const j=r.record_job||{state:"idle"};
   document.getElementById("recstat").textContent=j.state==="recording"?`recording… ${fmtT(j.elapsed_s)} (charts keep updating meanwhile)`:j.state==="error"?("failed: "+(j.error||"unknown")):"";
   draw("c0",GROUPS[0],r);draw("c1",GROUPS[1],r);draw("c2",GROUPS[2],r);
-  document.getElementById("h0").textContent=(HELP["Episode_Reward/stand_success"]||{}).help||"";
-  document.getElementById("h1").textContent="Height → tall first, upright torso, feet taking the load, then matching standing pose. All rise toward their max as recovery improves.";
+  const isStand=r.task==="stand";
+  document.getElementById("title").textContent=isStand?"G1 stand-still training":"G1 get-up training";
+  document.getElementById("moneytitle").textContent=isStand?"Balance success":"Stand-up success";
+  document.getElementById("h0").textContent=isStand
+    ?"Bonus for staying tall, upright and on both feet through shoves (max 5.0). When it climbs toward 5 and stays there, the robot can stand through pushes."
+    :(HELP["Episode_Reward/stand_success"]||{}).help||"";
+  document.getElementById("h1").textContent=isStand
+    ?"Height, upright torso, weight on both feet, plus staying still. All rise toward their max as balance improves."
+    :"Height → tall first, upright torso, feet taking the load, then matching standing pose. All rise toward their max as recovery improves.";
   document.getElementById("h2").textContent="Everything summed per episode — overall direction of learning.";
 }
 function draw(id,tags,r){
@@ -415,7 +467,7 @@ function draw(id,tags,r){
     s.value.forEach((v,j)=>j?x.lineTo(X(j),Y(v)):x.moveTo(X(j),Y(v)));x.stroke();
     x.fillStyle=COLORS[i%COLORS.length];x.font="12px sans-serif";
     const nm=(HELP[t]||{}).name||t;
-    x.fillText(`${nm}  last ${s.last.toFixed(3)}`,40+i*220,c.height-4);
+    x.fillText(`${nm}  last ${s.last.toFixed(3)}`,40+i*170,c.height-4);
   });
 }
 document.getElementById("runs").innerHTML='<option value="__">loading…</option>';

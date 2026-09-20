@@ -8,7 +8,8 @@ Commands:
     stand      viewer-only balanced stand demo
     gui        3D viewer + tkinter control panel
     check      10 s tkinter self-test
-    train      get-up training + dashboard
+    train      training + dashboard (--task getup|stand, default getup)
+    train-stand stand-still balance training + dashboard (shortcut)
     dashboard  friendly live dashboard (:6006)
     record     headless CPU rollout video of latest policy
     terrains   regenerate test scenes
@@ -36,6 +37,11 @@ def _add_common_stand_args(ap: argparse.ArgumentParser):
     ap.add_argument("--policy", default=DEFAULT_LOCAL_POLICY)
     ap.add_argument("--scene", default=None, help="MuJoCo scene XML (overrides --terrain)")
     ap.add_argument("--terrain", choices=sorted(TERRAINS), default="flat")
+    ap.add_argument("--stand-policy", default=None,
+                    help="Stand-still policy (default: latest g1_stand snapshot)")
+    ap.add_argument("--mode", choices=("walk", "stand", "auto"), default="walk",
+                    help="walk = velocity policy, stand = balance policy, "
+                         "auto = switch on zero command")
     return ap
 
 
@@ -45,14 +51,16 @@ def cmd_stand(args: argparse.Namespace) -> int:
 
     scene = resolve_scene(args.terrain, args.scene)
     ok = run_stand(args.policy, scene, args.seconds, args.sim_dt,
-                   args.headless, standstill=not args.no_standstill)
+                   args.headless, standstill=not args.no_standstill,
+                   stand_policy_path=args.stand_policy, mode=args.mode)
     return 0 if ok else 1
 
 
 def cmd_gui(args: argparse.Namespace) -> int:
     from g1_app.apps.gui import G1Gui
 
-    G1Gui(policy=args.policy, scene=args.scene, terrain=args.terrain).run()
+    G1Gui(policy=args.policy, scene=args.scene, terrain=args.terrain,
+          stand_policy=args.stand_policy, mode=args.mode).run()
     return 0
 
 
@@ -74,6 +82,14 @@ def cmd_train(args: argparse.Namespace) -> int:
     return main()
 
 
+def cmd_train_stand(args: argparse.Namespace) -> int:
+    # Shortcut for `g1 train -- --task stand`.
+    sys.argv = ["g1 train-stand", "--task", "stand"] + args.forward
+    from g1_app.lab.train import main
+
+    return main()
+
+
 def cmd_dashboard(args: argparse.Namespace) -> int:
     from g1_app.lab.dashboard import main as dash_main
 
@@ -84,10 +100,11 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 def cmd_record(args: argparse.Namespace) -> int:
     from g1_app.lab.record import find_latest_run, latest_policy_onnx, record
 
-    run_dir = args.run_dir or find_latest_run()
+    run_dir = args.run_dir or find_latest_run(args.experiment)
     print(f"run: {run_dir}")
     record(latest_policy_onnx(run_dir), episodes=args.episodes,
-           seconds=args.seconds, fps=args.fps, out_path=args.out, seed=args.seed)
+           seconds=args.seconds, fps=args.fps, out_path=args.out, seed=args.seed,
+           standing=args.stand)
     return 0
 
 
@@ -123,11 +140,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("check", help="tkinter env self-test")
     p.set_defaults(func=cmd_check)
 
-    p = sub.add_parser("train", help="get-up training + dashboard")
+    p = sub.add_parser("train", help="get-up/stand training + dashboard")
     p.add_argument("forward", nargs=argparse.REMAINDER,
-                   help="args forwarded to lab.train (e.g. -- --num-envs 1024)")
+                   help="args forwarded to lab.train (e.g. -- --task stand)")
     # Consume optional `--` separator.
     p.set_defaults(func=cmd_train)
+
+    p = sub.add_parser("train-stand", help="stand-still training + dashboard")
+    p.add_argument("forward", nargs=argparse.REMAINDER,
+                   help="args forwarded to lab.train (e.g. -- --num-envs 1024)")
+    p.set_defaults(func=cmd_train_stand)
 
     p = sub.add_parser("dashboard", help="friendly live dashboard")
     p.add_argument("--port", type=int, default=6006)
@@ -135,6 +157,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("record", help="headless CPU policy video")
     p.add_argument("--run-dir", default=None)
+    p.add_argument("--experiment", default="g1_getup",
+                   help="experiment folder under logs/rsl_rl (g1_getup|g1_stand)")
+    p.add_argument("--stand", action="store_true",
+                   help="start episodes standing (for stand policy) not fallen")
     p.add_argument("--episodes", type=int, default=3)
     p.add_argument("--seconds", type=float, default=8.0)
     p.add_argument("--fps", type=int, default=20)
