@@ -6,11 +6,7 @@
 ![MuJoCo](https://img.shields.io/badge/sim-MuJoCo-orange)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 
-Millions of elderly people live alone. A truly useful home companion robot must do
-three things before anything else: **keep its balance** when bumped, **get back up**
-when it falls, and **move safely indoors** around furniture, doors, and clutter.
-UniRobot is the training ground where our G1 learns exactly that — entirely in
-MuJoCo simulation, with one-command tooling from first clone to trained policy.
+UniRobot is a simulation platform for training balance and locomotion policies for the Unitree G1 humanoid.
 
 ## Highlights
 
