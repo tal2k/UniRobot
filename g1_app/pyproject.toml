@@ -5,7 +5,8 @@ description = "Unitree G1 balanced stand, interactive control, and fall-recovery
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "mujoco>=3.5.0",
+  # mujoco must match mujoco-warp exactly: newer mujoco drops flags warp imports.
+  "mujoco==3.5.0",
   "onnxruntime>=1.20",
   "numpy>=1.26",
   "imageio>=2.30",
@@ -17,6 +18,12 @@ dependencies = [
 train = [
   "mjlab==1.2.0",
   "mujoco-warp==3.5.0",
+  # mjlab 1.2.0 uses warp's wp.context API, removed in newer warp-lang.
+  "warp-lang==1.14.0",
+  # NOTE: the mjlab==1.2.0 wheel on PyPI calls wp.context.runtime in
+  # mjlab/sim/sim.py (absent in warp-lang 1.14/1.17). The working build
+  # uses wp.get_cuda_driver_version() there instead — the Colab notebook
+  # applies this one-line sed after install. Whole tree otherwise identical.
 ]
 dev = [
   "pytest>=8",
