@@ -14,7 +14,7 @@ g1 stand --seconds 30    # viewer demo
 g1 gui                   # 3D view + control panel
 g1 gui --mode auto       # walk/stand switching (needs trained stand policy)
 g1 stand --headless --seconds 12   # servers / CI
-g1 stand --terrain slope # pick terrain: flat|rough|slope|steps|obstacles
+g1 stand --terrain slope # pick terrain: flat|rough|slope|steps|obstacles|apartment
 g1 train                 # get-up training + dashboard on :6006
 g1 train-stand           # stand-still balance training + dashboard
 g1 dashboard             # dashboard only
@@ -95,7 +95,7 @@ Opens 3D viewer + **G1 Control** panel:
   Quit (close all).
 - **Keyboard** — arrows move, `A`/`D` turn, `Space` = stand.
 - **Checkbox** — "Stand still (lock position…)" toggles anchor logic.
-- **Terrain dropdown + Load** — switch flat/rough/slope/steps/obstacles
+- **Terrain dropdown + Load** — switch flat/rough/slope/steps/obstacles/apartment
   without restart. Robot respawns at start pad; sliders preserved.
 - **Status line** — sim time, torso height (~0.78 m), tilt (~0 upright),
   command vector, state: `WALKING`, `STANDING (settling…)`,
@@ -109,9 +109,10 @@ Opens 3D viewer + **G1 Control** panel:
 
 ## 4. Test Terrains
 
-Five scenes in `models/g1/` (regenerate: `g1 terrains`, needs `numpy` +
-`imageio`). Every scene keeps a flat 2×2 m start pad at origin; features at
-x ≥ 1.2 m.
+Six scenes in `models/g1/` (regenerate: `g1 terrains`, needs `numpy` +
+`imageio`). The five test tracks keep a flat 2×2 m start pad at origin
+with features at x ≥ 1.2 m; `apartment` is a full 18×11 m elderly flat
+(spawn pad around origin stays empty) — see `docs/terrains.md`.
 
 | Terrain | File | Verified (headless) |
 |---|---|---|
@@ -120,6 +121,7 @@ x ≥ 1.2 m.
 | `slope` | `scene_slope.xml` | 0.4 m/s → climbs 7° ramp to platform |
 | `steps` | `scene_steps.xml` | 0.25 m/s → 5×6 cm steps up, over, down |
 | `obstacles` | `scene_obstacles.xml` | 0.25 m/s → clears bars, corridor, pillar |
+| `apartment` | `scene_apartment.xml` | stand 5 s, no fall; 11 zones walkable |
 
 Policy trained for walking, not parkour — drive slowly, steer via GUI.
 

@@ -16,6 +16,7 @@ TERRAINS = {
     "slope": os.path.join(G1_MODEL_DIR, "scene_slope.xml"),
     "steps": os.path.join(G1_MODEL_DIR, "scene_steps.xml"),
     "obstacles": os.path.join(G1_MODEL_DIR, "scene_obstacles.xml"),
+    "apartment": os.path.join(G1_MODEL_DIR, "scene_apartment.xml"),
 }
 
 

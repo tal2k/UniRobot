@@ -22,6 +22,7 @@ tensorboard/
 
 # Models generated locally (keep curated models/, ignore snapshots)
 *.onnx.bak
+*.pt
 
 # Build trees (local only)
 thirdparty/

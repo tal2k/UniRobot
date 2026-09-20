@@ -118,7 +118,7 @@ Tracked via `.gitattributes`:
 
 - `g1_app/docs/architecture.md` — package map, owned vs. vendored boundary
 - `g1_app/docs/how_it_works.md` — policy bridge, observation/action, standstill states
-- `g1_app/docs/terrains.md` — 5 test scenes + regeneration
+- `g1_app/docs/terrains.md` — 6 scenes (5 test tracks + apartment) + regeneration
 - `g1_app/docs/training.md` — get-up task, reward recipe, dashboard, videos
 - `g1_app/docs/troubleshooting.md` — GUI/display, falls, common errors
 

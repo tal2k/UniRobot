@@ -22,6 +22,7 @@ def test_fallback_matches_yaml_shapes():
 
 
 def test_terrains_exist():
-    assert set(TERRAINS) == {"flat", "rough", "slope", "steps", "obstacles"}
+    assert set(TERRAINS) == {"flat", "rough", "slope", "steps", "obstacles",
+                             "apartment"}
     for name, path in TERRAINS.items():
         assert os.path.isfile(path), f"{name}: {path}"
