@@ -1,4 +1,4 @@
-"""RL configuration for the staged Unitree G1 get-up tasks."""
+"""RL configuration for the v2 Unitree G1 get-up tasks (Roll + StandUp)."""
 
 from mjlab.rl import (
   RslRlModelCfg,
@@ -44,26 +44,6 @@ def _runner_cfg(experiment_name: str, max_iterations: int) -> RslRlOnPolicyRunne
     num_steps_per_env=24,
     max_iterations=max_iterations,
   )
-
-
-def unitree_g1_getup_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-  """Legacy single-policy get-up runner (experiment g1_getup)."""
-  return _runner_cfg("g1_getup", 5001)
-
-
-def unitree_g1_getup_reposition_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-  """Reposition (Stage A) runner."""
-  return _runner_cfg("g1_getup_reposition", 3000)
-
-
-def unitree_g1_getup_situp_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-  """SitUp (Stage B) runner."""
-  return _runner_cfg("g1_getup_situp", 3000)
-
-
-def unitree_g1_getup_rise_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-  """Rise (Stage C) runner."""
-  return _runner_cfg("g1_getup_rise", 5001)
 
 
 def unitree_g1_getup_roll_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:

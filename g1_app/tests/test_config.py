@@ -1,7 +1,4 @@
 import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.config import DEPLOY_YAML, get_local_cfg, load_local_cfg
 from core.terrains import TERRAINS

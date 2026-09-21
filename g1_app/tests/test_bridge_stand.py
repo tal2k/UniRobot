@@ -1,16 +1,8 @@
 import os
-import sys
-
-import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "unitree_rl_mjlab",
-))
 
 import mujoco
 import numpy as np
+import pytest
 
 from core.bridge import (
     DEFAULT_LOCAL_POLICY,

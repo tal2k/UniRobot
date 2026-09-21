@@ -4,9 +4,7 @@ import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _WORKSPACE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(_WORKSPACE, "unitree_rl_mjlab"))
 
 from core.getup_stages import (  # noqa: E402
     DONE,
@@ -19,10 +17,7 @@ from core.getup_stages import (  # noqa: E402
     StageSwitcher,
     rms_pose_error,
 )
-from training.getup.getup_env_cfg import make_getup_env_cfg  # noqa: E402
-from training.getup.reposition_env_cfg import make_reposition_env_cfg  # noqa: E402
 from training.getup.roll_env_cfg import make_roll_env_cfg  # noqa: E402
-from training.getup.situp_env_cfg import make_situp_env_cfg  # noqa: E402
 from training.getup.standup_env_cfg import make_standup_env_cfg  # noqa: E402
 
 ACTOR_TERMS = ["base_ang_vel", "projected_gravity", "base_height",
@@ -30,13 +25,6 @@ ACTOR_TERMS = ["base_ang_vel", "projected_gravity", "base_height",
 
 
 @pytest.mark.parametrize("factory,episode,expected", [
-    (make_reposition_env_cfg, 12.0,
-     {"supine_success", "supine_pose", "torso_horizontal"}),
-    (make_situp_env_cfg, 10.0,
-     {"pelvis_rising", "stand_height", "stand_on_feet", "feet_force",
-      "bad_support", "no_head_contact"}),
-    (make_getup_env_cfg, 8.0,
-     {"stand_success", "stand_on_feet", "bad_support", "no_head_contact"}),
     (make_roll_env_cfg, 12.0,
      {"roll_success", "face_up", "supine_pose", "torso_horizontal"}),
     (make_standup_env_cfg, 12.0,
@@ -53,14 +41,6 @@ def test_stage_env_cfgs_build(factory, episode, expected):
     assert list(cfg.observations["critic"].terms) == ACTOR_TERMS + ["base_lin_vel"]
     assert "joint_pos" in cfg.actions
     assert "foot_friction" in cfg.events and "base_com" in cfg.events
-
-
-def test_stage_a_has_no_balance_only_terms():
-    cfg = make_reposition_env_cfg()
-    assert "stand_on_feet" not in cfg.rewards
-    assert "bad_support" not in cfg.rewards
-    # Reposition needs only self-collision feedback.
-    assert [s.name for s in cfg.scene.sensors] == ["self_collision"]
 
 
 def test_roll_cfg_minimal_sensors():
@@ -87,20 +67,13 @@ def test_standup_cfg_merged():
     assert cfg.rewards["stand_success"].params["min_height"] == 0.70
 
 
-def test_stage_b_lying_reset():
-    cfg = make_situp_env_cfg()
-    assert cfg.events["reset_lying"].func.__name__ == "reset_lying_pose"
-
-
 def test_stage_tasks_register():
     from mjlab.tasks.registry import list_tasks
 
     import training.getup.config.g1  # noqa: F401  (registers the tasks)
 
     tasks = list_tasks()
-    for task_id in ("Unitree-G1-Getup", "Unitree-G1-Getup-Reposition",
-                    "Unitree-G1-Getup-SitUp", "Unitree-G1-Getup-Rise",
-                    "Unitree-G1-Getup-Roll", "Unitree-G1-Getup-StandUp"):
+    for task_id in ("Unitree-G1-Getup-Roll", "Unitree-G1-Getup-StandUp"):
         assert task_id in tasks
 
 
@@ -114,9 +87,6 @@ def test_stage_tasks_load_full_config():
     sys.modules["rl_train_entry_test"] = mod
     spec.loader.exec_module(mod)
     for task_id, experiment in (
-        ("Unitree-G1-Getup-Reposition", "g1_getup_reposition"),
-        ("Unitree-G1-Getup-SitUp", "g1_getup_situp"),
-        ("Unitree-G1-Getup-Rise", "g1_getup_rise"),
         ("Unitree-G1-Getup-Roll", "g1_getup_roll"),
         ("Unitree-G1-Getup-StandUp", "g1_getup_standup"),
     ):
@@ -128,12 +98,9 @@ def test_stage_tasks_load_full_config():
 def test_train_stage_mapping():
     from lab.train import STAGE_TASK_IDS, TASK_IDS
 
-    assert STAGE_TASK_IDS["A"] == "Unitree-G1-Getup-Reposition"
-    assert STAGE_TASK_IDS["B"] == "Unitree-G1-Getup-SitUp"
-    assert STAGE_TASK_IDS["C"] == "Unitree-G1-Getup-Rise"
     assert STAGE_TASK_IDS["roll"] == "Unitree-G1-Getup-Roll"
     assert STAGE_TASK_IDS["standup"] == "Unitree-G1-Getup-StandUp"
-    assert TASK_IDS["getup"] == "Unitree-G1-Getup"
+    assert TASK_IDS["stand"] == "Unitree-G1-Stand"
 
 
 def test_curriculum_reexports():
@@ -294,7 +261,7 @@ def test_supine_target_shared_with_training():
 
     assert len(SUPINE_TARGET) == 29
     assert list(mdp.SUPINE_TARGET) == list(SUPINE_TARGET)
-    cfg_target = make_reposition_env_cfg().rewards["supine_success"].params["target_pos"]
+    cfg_target = make_roll_env_cfg().rewards["supine_pose"].params["target_pos"]
     assert list(cfg_target) == list(SUPINE_TARGET)
 
 
@@ -303,8 +270,5 @@ def test_stage_metric_names_exist_in_cfgs():
     # reward the stage actually logs.
     from lab.train import STAGE_METRICS
 
-    assert STAGE_METRICS["A"] in make_reposition_env_cfg().rewards
-    assert STAGE_METRICS["B"] in make_situp_env_cfg().rewards
-    assert STAGE_METRICS["C"] in make_getup_env_cfg().rewards
     assert STAGE_METRICS["roll"] in make_roll_env_cfg().rewards
     assert STAGE_METRICS["standup"] in make_standup_env_cfg().rewards

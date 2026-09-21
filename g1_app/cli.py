@@ -33,8 +33,8 @@ for _p in (_WS, _CLI_DIR):
 
 def _add_common_stand_args(ap: argparse.ArgumentParser,
                            modes=("walk", "stand", "auto")):
-    from g1_app.core.bridge import DEFAULT_LOCAL_POLICY
-    from g1_app.core.terrains import TERRAINS
+    from core.bridge import DEFAULT_LOCAL_POLICY
+    from core.terrains import TERRAINS
 
     ap.add_argument("--policy", default=DEFAULT_LOCAL_POLICY)
     ap.add_argument("--scene", default=None, help="MuJoCo scene XML (overrides --terrain)")
@@ -49,8 +49,8 @@ def _add_common_stand_args(ap: argparse.ArgumentParser,
 
 
 def cmd_stand(args: argparse.Namespace) -> int:
-    from g1_app.core.bridge import run_stand
-    from g1_app.core.terrains import resolve_scene
+    from core.bridge import run_stand
+    from core.terrains import resolve_scene
 
     scene = resolve_scene(args.terrain, args.scene)
     ok = run_stand(args.policy, scene, args.seconds, args.sim_dt,
@@ -60,7 +60,7 @@ def cmd_stand(args: argparse.Namespace) -> int:
 
 
 def cmd_gui(args: argparse.Namespace) -> int:
-    from g1_app.apps.gui import G1Gui
+    from apps.gui import G1Gui
 
     G1Gui(policy=args.policy, scene=args.scene, terrain=args.terrain,
           stand_policy=args.stand_policy, mode=args.mode,
@@ -70,7 +70,7 @@ def cmd_gui(args: argparse.Namespace) -> int:
 
 
 def cmd_check(_args: argparse.Namespace) -> int:
-    from g1_app.apps.check import main
+    from apps.check import main
 
     try:
         main()
@@ -80,8 +80,8 @@ def cmd_check(_args: argparse.Namespace) -> int:
 
 
 def cmd_recover(args: argparse.Namespace) -> int:
-    from g1_app.core.bridge import run_recover
-    from g1_app.core.terrains import resolve_scene
+    from core.bridge import run_recover
+    from core.terrains import resolve_scene
 
     scene = resolve_scene(args.terrain, args.scene)
     stage_policies = {
@@ -98,7 +98,7 @@ def cmd_recover(args: argparse.Namespace) -> int:
 def cmd_train(args: argparse.Namespace) -> int:
     # lab.train has its own argparse; forward sys.argv style.
     sys.argv = ["g1 train"] + args.forward
-    from g1_app.lab.train import main
+    from lab.train import main
 
     return main()
 
@@ -106,20 +106,20 @@ def cmd_train(args: argparse.Namespace) -> int:
 def cmd_train_stand(args: argparse.Namespace) -> int:
     # Shortcut for `g1 train -- --task stand`.
     sys.argv = ["g1 train-stand", "--task", "stand"] + args.forward
-    from g1_app.lab.train import main
+    from lab.train import main
 
     return main()
 
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
-    from g1_app.lab.dashboard import main as dash_main
+    from lab.dashboard import main as dash_main
 
     sys.argv = ["g1 dashboard", "--port", str(args.port)]
     return dash_main()
 
 
 def cmd_record(args: argparse.Namespace) -> int:
-    from g1_app.lab.record import find_latest_run, latest_policy_onnx, record
+    from lab.record import find_latest_run, latest_policy_onnx, record
 
     if args.policy is not None:
         policy_path = args.policy
@@ -134,7 +134,7 @@ def cmd_record(args: argparse.Namespace) -> int:
 
 
 def cmd_export(args: argparse.Namespace) -> int:
-    from g1_app.lab.export import export_ckpt
+    from lab.export import export_ckpt
 
     out = args.out or os.path.splitext(args.ckpt)[0] + ".onnx"
     export_ckpt(args.ckpt, out)
@@ -142,20 +142,20 @@ def cmd_export(args: argparse.Namespace) -> int:
 
 
 def cmd_terrains(_args: argparse.Namespace) -> int:
-    from g1_app.tools.terrains import main
+    from tools.terrains import main
 
     main()
     return 0
 
 
 def cmd_verify(_args: argparse.Namespace) -> int:
-    from g1_app.scripts.verify_model import main
+    from scripts.verify_model import main
 
     return main()
 
 
 def build_parser() -> argparse.ArgumentParser:
-    from g1_app.core.terrains import TERRAINS
+    from core.terrains import TERRAINS
 
     ap = argparse.ArgumentParser(prog="g1", description="G1 humanoid app CLI")
     sub = ap.add_subparsers(dest="command", required=True)
@@ -220,8 +220,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--policy", default=None,
                    help="policy.onnx directly (e.g. models/g1_stand_policy.onnx); "
                         "overrides --run-dir/--experiment lookup")
-    p.add_argument("--experiment", default="g1_getup",
-                   help="experiment folder under logs/rsl_rl (g1_getup|g1_stand)")
+    p.add_argument("--experiment", default="g1_getup_standup",
+                   help="experiment folder under logs/rsl_rl "
+                        "(g1_getup_standup|g1_getup_roll|g1_stand)")
     p.add_argument("--stand", action="store_true",
                    help="start episodes standing (for stand policy) not fallen")
     p.add_argument("--start", choices=["fallen", "supine", "prone"], default="fallen",

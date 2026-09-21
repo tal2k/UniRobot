@@ -9,21 +9,12 @@ obstacles/apartment. Every scene keeps a flat 2x2 m start pad around the origin.
 """
 import math
 import os
-import sys
 import xml.etree.ElementTree as ET
 
 import imageio
 import numpy as np
 
-try:
-    from g1_app.core.config import G1_MODEL_DIR
-except ImportError:
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    try:
-        from core.config import G1_MODEL_DIR
-    except ImportError:
-        HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        G1_MODEL_DIR = os.path.join(HERE, "models", "g1")
+from core.config import G1_MODEL_DIR
 
 G1_DIR = G1_MODEL_DIR
 BASE_SCENE = os.path.join(G1_DIR, "scene_29dof.xml")

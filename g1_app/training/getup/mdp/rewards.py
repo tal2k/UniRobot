@@ -211,32 +211,6 @@ def torso_horizontal(
   return torch.exp(-torch.square((1.0 - horiz) / std))
 
 
-def supine_success(
-  env: ManagerBasedRlEnv,
-  max_height: float,
-  min_tilt: float,
-  max_pose_err: float,
-  target_pos: list[float],
-  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-  """Sparse gate: low, horizontal, joints close to supine target.
-
-  1 only when the robot is lying (height below ``max_height``), the torso
-  is horizontal (``min_tilt`` on |g_xy|) and the joint positions are
-  within ``max_pose_err`` RMS of the supine target pose.
-  """
-  h = _robot(env).data.root_link_pos_w[:, 2]
-  tilt = torch.norm(_robot(env).data.projected_gravity_b[:, :2], dim=1)
-  asset = _robot(env)
-  ids = asset_cfg.joint_ids
-  q = asset.data.joint_pos if ids is None else asset.data.joint_pos[:, ids]
-  q_target = torch.as_tensor(target_pos, device=q.device, dtype=q.dtype)
-  q_target = q_target.flatten().unsqueeze(0)
-  q_target = q_target if ids is None else q_target[:, ids]
-  pose_err = torch.sqrt(torch.mean(torch.square(q - q_target), dim=1))
-  return ((h < max_height) & (tilt > min_tilt) & (pose_err < max_pose_err)).float()
-
-
 def face_up_gravity(
   env: ManagerBasedRlEnv,
   std: float,

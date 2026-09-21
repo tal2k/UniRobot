@@ -6,60 +6,25 @@ Prefer the unified CLI (needs a display):
     g1 gui
     g1 gui --terrain slope
 """
-import os
-import sys
 import time
+import tkinter as tk
 
 import mujoco
 import mujoco.viewer
 import numpy as np
 
-try:
-    from g1_app.core.bridge import (
-        DEFAULT_LOCAL_POLICY,
-        G1StandPolicy,
-        GetUpBridge,
-        WalkStandBridge,
-        find_latest_recovery_policy,
-        find_latest_stand_policy,
-        reset_fallen,
-        reset_standing,
-    )
-    from g1_app.core.getup_stages import GETUP, ROLL
-    from g1_app.core.terrains import TERRAINS
-except ImportError:
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    try:
-        from core.bridge import (
-            DEFAULT_LOCAL_POLICY,
-            G1StandPolicy,
-            GetUpBridge,
-            WalkStandBridge,
-            find_latest_recovery_policy,
-            find_latest_stand_policy,
-            reset_fallen,
-            reset_standing,
-        )
-        from core.getup_stages import GETUP, ROLL
-        from core.terrains import TERRAINS
-    except ImportError:
-        from g1_stand_onnx import DEFAULT_LOCAL_POLICY, TERRAINS, G1StandPolicy, reset_standing
-
-        WalkStandBridge = None
-        GetUpBridge = None
-
-        def find_latest_stand_policy():  # noqa: D103
-            return None
-
-        def find_latest_recovery_policy(_kind):  # noqa: D103
-            return None
-
-        def reset_fallen(*_a, **_k):  # noqa: D103
-            raise RuntimeError("recover mode needs the g1_app package layout")
-
-        ROLL, GETUP = "roll", "getup"
-
-import tkinter as tk
+from core.bridge import (
+    DEFAULT_LOCAL_POLICY,
+    G1StandPolicy,
+    GetUpBridge,
+    WalkStandBridge,
+    find_latest_recovery_policy,
+    find_latest_stand_policy,
+    reset_fallen,
+    reset_standing,
+)
+from core.getup_stages import GETUP, ROLL
+from core.terrains import TERRAINS
 
 SIM_DT = 0.005
 CMD_RANGES = {"vx": (-0.5, 1.0), "vy": (-0.5, 0.5), "wz": (-1.0, 1.0)}
@@ -308,20 +273,3 @@ class G1Gui:
         print("  2. 'G1 Control' panel (sliders/buttons) — forced on top for 3 s;")
         print("     if you lose it, look behind the viewer or in the taskbar/dock.")
         self.root.mainloop()
-
-
-if __name__ == "__main__":
-    import argparse
-    ap = argparse.ArgumentParser(description="G1 interactive GUI control")
-    ap.add_argument("--policy", default=DEFAULT_LOCAL_POLICY)
-    ap.add_argument("--scene", default=None, help="MuJoCo scene XML (overrides --terrain)")
-    ap.add_argument("--terrain", choices=sorted(TERRAINS), default="flat")
-    ap.add_argument("--stand-policy", default=None,
-                    help="Stand-still policy (default: latest g1_stand snapshot)")
-    ap.add_argument("--policy-roll", default=None,
-                    help="Roll-to-supine ONNX for --mode recover")
-    ap.add_argument("--policy-standup", default=None,
-                    help="Supine-to-stand ONNX for --mode recover")
-    ap.add_argument("--mode", choices=("walk", "stand", "auto", "recover"), default="walk")
-    ap.add_argument("--seed", type=int, default=0)
-    G1Gui(**vars(ap.parse_args())).run()

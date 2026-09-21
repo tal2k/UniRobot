@@ -1,5 +1,10 @@
 # Fall-recovery (get-up) training
 
+> Current pipeline (v2): `g1 train -- --task getup --stage roll|standup`
+> (Roll: any fall → supine; StandUp: lying → stand, merged). The single-task
+> recipe below is superseded but documents the discovery→refine pattern and
+> the stand-task push curriculum. Full v2 spec: `getup_staged_policies.md` §14.
+
 Task `Unitree-G1-Getup` (`training/getup/`): random fallen starts, 8 s
 episodes, no failure termination. Stage I (discovery) → Stage II
 (refinement, current recipe: feet force + both-feet bonus + no-head +

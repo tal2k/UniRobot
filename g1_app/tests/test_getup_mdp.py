@@ -5,18 +5,9 @@ inside MJLab training runs — a shape or indexing bug there wastes GPU
 hours. These fakes exercise them directly on CPU.
 """
 
-import os
-import sys
+from types import SimpleNamespace  # noqa: E402
 
 import torch
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "unitree_rl_mjlab",
-))
-
-from types import SimpleNamespace  # noqa: E402
 
 from training.getup.mdp import events as E  # noqa: E402
 from training.getup.mdp import rewards as R  # noqa: E402

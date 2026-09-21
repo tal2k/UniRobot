@@ -463,9 +463,9 @@ HoST-style), each discovery→refine via `--resume`.
 
 ## 14. v2 implementation — ROLL → GETUP (shipped 2026-09-21, uncommitted)
 
-v1 (A/B/C deployment switcher, §2–§8) is superseded: three deployment
-switches contradict the literature (§13.1 — HumanUP/HoST ship single get-up
-policies; BAT shows heuristic switching is the fragile part). v2 splits by
+v1 (A/B/C deployment switcher, §2–§8) is superseded and its training tasks
+(`Reposition`/`SitUp`/`Rise`, legacy `Getup`) were removed from the codebase
+(recoverable from git history); §2–§8 stay as design history. v2 splits by
 *start family* with supine as the funnel and trains **two** runs.
 
 ### 14.1 Deployment: one recovery switch

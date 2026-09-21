@@ -1,10 +1,6 @@
 import math
-import os
-import sys
 
 import numpy as np
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.math import euler_to_quat, quat_to_projected_gravity, tilt_from_quat
 

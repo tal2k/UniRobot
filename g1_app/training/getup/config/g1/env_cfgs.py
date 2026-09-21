@@ -1,13 +1,8 @@
 """Unitree G1 fall-recovery (get-up) environment configurations.
 
-v2 pipeline (see g1_app/docs/getup_staged_policies.md §13):
+v2 pipeline (see g1_app/docs/getup_staged_policies.md §14):
   Unitree-G1-Getup-Roll      Roll: any fall -> supine (roll_env_cfg)
   Unitree-G1-Getup-StandUp   StandUp: lying family -> stand, merged (standup_env_cfg)
-Legacy staged tasks (kept as curriculum/warm-start sources):
-  Unitree-G1-Getup-Reposition  Stage A (reposition_env_cfg)
-  Unitree-G1-Getup-SitUp       Stage B (situp_env_cfg)
-  Unitree-G1-Getup-Rise        Stage C (getup_env_cfg, refinement recipe)
-  Unitree-G1-Getup             legacy single-policy task (Stage C recipe)
 """
 
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -17,10 +12,7 @@ from src.assets.robots import (
   get_g1_robot_cfg,
 )
 
-from training.getup.getup_env_cfg import make_getup_env_cfg
-from training.getup.reposition_env_cfg import make_reposition_env_cfg
 from training.getup.roll_env_cfg import make_roll_env_cfg
-from training.getup.situp_env_cfg import make_situp_env_cfg
 from training.getup.standup_env_cfg import make_standup_env_cfg
 
 
@@ -47,26 +39,6 @@ def _finalize_g1_cfg(cfg: ManagerBasedRlEnvCfg, play: bool) -> ManagerBasedRlEnv
     cfg.observations["actor"].enable_corruption = False
 
   return cfg
-
-
-def unitree_g1_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create Unitree G1 get-up configuration (flat ground)."""
-  return _finalize_g1_cfg(make_getup_env_cfg(), play)
-
-
-def unitree_g1_getup_reposition_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create Unitree G1 Reposition (Stage A) configuration."""
-  return _finalize_g1_cfg(make_reposition_env_cfg(), play)
-
-
-def unitree_g1_getup_situp_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create Unitree G1 SitUp (Stage B) configuration."""
-  return _finalize_g1_cfg(make_situp_env_cfg(), play)
-
-
-def unitree_g1_getup_rise_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create Unitree G1 Rise (Stage C) configuration."""
-  return _finalize_g1_cfg(make_getup_env_cfg(), play)
 
 
 def unitree_g1_getup_roll_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:

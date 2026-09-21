@@ -48,15 +48,7 @@ ignore = ["BLE001", "S110", "S112", "S101", "ISC004", "RUF046", "RUF059", "FURB1
 select = ["E", "F", "I", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
-# Legacy shims + runtime sys.path bootstrapping (imports after path setup).
-"g1_stand_onnx.py" = ["E402"]
-"g1_gui_control.py" = ["E402"]
-"run_g1_stand.py" = ["E402"]
-"check_gui.py" = ["E402"]
-"make_terrains.py" = ["E402"]
-"train_getup.py" = ["E402"]
-"dashboard.py" = ["E402"]
-"record_getup.py" = ["E402"]
+# Runtime sys.path bootstrapping (imports after path setup).
 "cli.py" = ["E402"]
 "lab/train.py" = ["E402"]
 "lab/dashboard.py" = ["E402"]

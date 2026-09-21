@@ -4,7 +4,6 @@ Canonical home of G1StandPolicy (moved from legacy g1_stand_onnx.py).
 New code: `from core.bridge import G1StandPolicy, reset_standing, run_stand`
 (or `from g1_app.core.bridge import ...` from the workspace root).
 """
-import argparse
 import os
 import time
 
@@ -12,34 +11,18 @@ import mujoco
 import numpy as np
 import onnxruntime as ort
 
-try:  # package-relative (pip install / python -m g1_app.cli)
-    from .config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, MODELS_DIR, WORKSPACE, get_local_cfg
-    from .getup_stages import (
-        DONE,
-        GETUP,
-        IDLE,
-        ROLL,
-        STAGE_SEQUENCE,
-        SUPINE_TARGET,
-        StageSwitcher,
-        rms_pose_error,
-    )
-    from .math import euler_to_quat, quat_to_projected_gravity
-    from .terrains import TERRAINS, resolve_scene
-except ImportError:  # legacy flat sys.path (APP_DIR on sys.path)
-    from core.config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, MODELS_DIR, WORKSPACE, get_local_cfg
-    from core.getup_stages import (
-        DONE,
-        GETUP,
-        IDLE,
-        ROLL,
-        STAGE_SEQUENCE,
-        SUPINE_TARGET,
-        StageSwitcher,
-        rms_pose_error,
-    )
-    from core.math import euler_to_quat, quat_to_projected_gravity
-    from core.terrains import TERRAINS, resolve_scene
+from .config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, MODELS_DIR, WORKSPACE, get_local_cfg
+from .getup_stages import (
+    DONE,
+    GETUP,
+    IDLE,
+    ROLL,
+    STAGE_SEQUENCE,
+    SUPINE_TARGET,
+    StageSwitcher,
+    rms_pose_error,
+)
+from .math import euler_to_quat, quat_to_projected_gravity
 
 DEFAULT_SCENE = os.path.join(G1_MODEL_DIR, "scene_29dof.xml")
 
@@ -893,28 +876,3 @@ def run_recover(stage_policies=None, scene=DEFAULT_SCENE, seconds=15.0,
     if viewer is not None:
         viewer.close()
     return stood
-
-
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="G1 balanced stand with pretrained ONNX policy")
-    ap.add_argument("--policy", default=DEFAULT_LOCAL_POLICY)
-    ap.add_argument("--scene", default=None,
-                    help="MuJoCo scene XML (overrides --terrain)")
-    ap.add_argument("--terrain", choices=sorted(TERRAINS), default="flat",
-                    help="Bundled test terrain (default: flat)")
-    ap.add_argument("--seconds", type=float, default=30.0)
-    ap.add_argument("--sim-dt", type=float, default=0.005)
-    ap.add_argument("--headless", action="store_true")
-    ap.add_argument("--no-standstill", action="store_true",
-                    help="Disable position lock: zero command marches in place")
-    ap.add_argument("--stand-policy", default=None,
-                    help="Stand-still policy (default: latest g1_stand snapshot)")
-    ap.add_argument("--mode", choices=("walk", "stand", "auto"), default="walk",
-                    help="walk = velocity policy, stand = balance policy, "
-                         "auto = switch on zero command")
-    args = ap.parse_args()
-    scene = resolve_scene(args.terrain, args.scene)
-    ok = run_stand(args.policy, scene, args.seconds, args.sim_dt,
-                   args.headless, standstill=not args.no_standstill,
-                   stand_policy_path=args.stand_policy, mode=args.mode)
-    raise SystemExit(0 if ok else 1)

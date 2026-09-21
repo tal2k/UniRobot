@@ -9,24 +9,12 @@ import argparse
 import glob
 import json
 import os
-import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-try:
-    from g1_app.core.config import resolve_videos_dir
-except ImportError:
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    try:
-        from core.config import resolve_videos_dir
-    except ImportError:
-        def resolve_videos_dir():  # type: ignore
-            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            new = os.path.join(base, "outputs", "videos")
-            old = os.path.join(base, "videos")
-            return new if os.path.isdir(new) else old
+from core.config import resolve_videos_dir
 
 LAB_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.dirname(LAB_DIR)
@@ -137,6 +125,20 @@ METRICS = {
 
 LIVE_STALE_S = 90  # no new data for this long -> training considered stopped
 MAX_POINTS = 400
+
+# Chart groups, drawn as canvases c0/c1/c2 (missing tags are skipped, so one
+# layout serves stand, roll and standup runs). Single source: extend here
+# (and METRICS above) when rewards change — the page template below only
+# carries a placeholder.
+CHART_GROUPS = [
+  ["Episode_Reward/stand_success", "Episode_Reward/roll_success"],
+  ["Episode_Reward/stand_height", "Episode_Reward/upright",
+   "Episode_Reward/stand_on_feet", "Episode_Reward/feet_force",
+   "Episode_Reward/stand_still", "Episode_Reward/supine_pose",
+   "Episode_Reward/torso_horizontal", "Episode_Reward/face_up",
+   "Episode_Reward/pelvis_rising", "Episode_Reward/com_vel_z"],
+  ["Train/mean_reward"],
+]
 
 # Same tag, different story: when a stand run is selected, these replace the
 # get-up-flavoured names/explanations in the chart legends.
@@ -328,7 +330,7 @@ def start_recording(run_id=None):
 def _record_job(run_id):
   try:
     try:
-        from g1_app.lab import record as record_getup
+        from lab import record as record_getup
     except ImportError:
         from lab import record as record_getup  # type: ignore
     if run_id and os.path.isfile(os.path.join(run_id, "policy.onnx")):
@@ -430,7 +432,7 @@ safe to run while training continues). A new snapshot lands every ~100 training 
 <div class="card"><h2>Total reward</h2>
 <canvas id="c2" width="900" height="180"></canvas><div class="help" id="h2"></div></div>
 <script>
-const GROUPS=[["Episode_Reward/stand_success"],["Episode_Reward/stand_height","Episode_Reward/upright","Episode_Reward/stand_on_feet","Episode_Reward/feet_force","Episode_Reward/stand_still"],["Train/mean_reward"],["Episode_Reward/bad_support"],["Episode_Reward/no_head_contact"],["Episode_Reward/pelvis_rising"],["Episode_Reward/com_vel_z"]];
+const GROUPS=__GROUPS_JSON__;
 const COLORS=["#1a9e4b","#2563eb","#d97706","#7c3aed","#dc2626"];
 const HELP={};
 function fmtT(s){if(s==null||!isFinite(s))return "–";s=Math.floor(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return (h?h+"h ":"")+m+"m "+(s%60)+"s";}
@@ -453,7 +455,7 @@ async function tick(){
     ["Elapsed",fmtT(r.elapsed_s)],["Speed",(r.steps_per_second?Math.round(r.steps_per_second).toLocaleString()+" steps/s":"–")],
     ["ETA",r.eta_s!=null?fmtT(r.eta_s):"–"],
     ["Environments",r.num_envs||"–"],
-    ["Success now",(r.metrics["Episode_Reward/stand_success"]||{last:"–"}).last?.toFixed?.(2)??"–"],
+    ["Success now",(r.metrics["Episode_Reward/stand_success"]||r.metrics["Episode_Reward/roll_success"]||{last:"–"}).last?.toFixed?.(2)??"–"],
   ];
   document.getElementById("stats").innerHTML=S.map(([l,v])=>`<div><div class="stat">${v}</div><div class="lbl">${l}</div></div>`).join("");
   const v=r.video,vid=document.getElementById("vid");
@@ -505,6 +507,7 @@ document.getElementById("recbtn").onclick=async()=>{
 tick();setInterval(tick,3000);
 </script></body></html>
 """
+PAGE = PAGE.replace("__GROUPS_JSON__", json.dumps(CHART_GROUPS))
 
 
 class Handler(BaseHTTPRequestHandler):

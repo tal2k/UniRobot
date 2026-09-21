@@ -24,10 +24,10 @@ for _p in (_WS, _APP):
 def main() -> int:
     import numpy as np
 
-    from g1_app.core.bridge import DEFAULT_LOCAL_POLICY
-    from g1_app.core.config import DEPLOY_YAML, get_local_cfg
-    from g1_app.core.math import quat_to_projected_gravity
-    from g1_app.core.terrains import TERRAINS
+    from core.bridge import DEFAULT_LOCAL_POLICY
+    from core.config import DEPLOY_YAML, get_local_cfg
+    from core.math import quat_to_projected_gravity
+    from core.terrains import TERRAINS
 
     ok = True
 

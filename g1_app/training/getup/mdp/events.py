@@ -7,6 +7,8 @@ import torch
 from mjlab.envs.mdp import quat_from_euler_xyz, quat_mul, sample_uniform
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
+from core.getup_stages import SUPINE_TARGET  # noqa: F401 (re-exported via mdp)
+
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
 
@@ -27,13 +29,9 @@ CROUCH_POSE = [
 ]
 
 
-# Supine neutral target, canonical in `core/getup_stages.py` (shared with the
-# deployment gate + recorder so the three can never drift apart).
-# Order: 6 L leg, 6 R leg, 3 waist, 7 L arm, 7 R arm (G1 29-DoF).
-try:
-  from core.getup_stages import SUPINE_TARGET  # noqa: F401 (re-exported via mdp)
-except ImportError:  # installed as g1_app.training.*
-  from g1_app.core.getup_stages import SUPINE_TARGET  # noqa: F401 (re-exported via mdp)
+# Supine neutral target is canonical in `core/getup_stages.py` (shared with
+# the deployment gate + recorder so the three can never drift apart; see
+# the import above). Order: 6 L leg, 6 R leg, 3 waist, 7 L arm, 7 R arm.
 
 
 def reset_lying_pose(

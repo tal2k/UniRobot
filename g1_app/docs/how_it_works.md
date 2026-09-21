@@ -27,3 +27,13 @@ only), `--mode stand` (balance only), `--mode auto` (nonzero command
 walks, zero command balances — no anchor needed). Switches cross-fade
 joint targets over ~0.4 s. `--stand-policy` overrides the path; default
 is the latest `g1_stand` snapshot (`find_latest_stand_policy()`).
+
+# Staged recovery (trained Roll + GetUp policies)
+
+`GetUpBridge` sequences ROLL (any fall → supine) → GETUP (supine → stand)
+→ DONE (balance handoff), all 94-dim like the stand policy. Switching is
+decided by `core/getup_stages.py::StageSwitcher` from height/tilt/speed +
+`facing` (body-x gravity: supine ≈ −1, prone ≈ +1, yaw-invariant), with
+hysteresis, timeouts and 0.4 s cross-fades. Run it with `g1 recover`, watch
+it with `g1 gui --mode recover` (Roll/GetUp/Auto/Drop buttons). Full spec:
+`getup_staged_policies.md` §14.

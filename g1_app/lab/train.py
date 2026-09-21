@@ -1,16 +1,12 @@
 """One-command G1 training + live dashboard. Owned by the G1 app.
 
-Canonical home (moved from legacy train_getup.py). Prefer:
+Canonical home. Prefer:
 
-    g1 train                        # get-up policy (default)
-    g1 train -- --task stand        # stand-still balance policy
-    g1 train -- --task getup --stage A   # staged get-up: Reposition
-    g1 train -- --task getup --stage B   # staged get-up: SitUp
-    g1 train -- --task getup --stage C   # staged get-up: Rise
     g1 train -- --task getup --stage roll      # v2 funnel: any fall -> supine
     g1 train -- --task getup --stage standup   # v2 merged: lying -> stand
+    g1 train -- --task stand                   # stand-still balance policy
     g1 train-stand -- --num-envs 1024
-    g1 train -- --num-envs 1024 --max-iterations 2000
+    g1 train -- --task getup --stage roll --num-envs 1024 --max-iterations 2000
 """
 
 import argparse
@@ -26,24 +22,16 @@ APP_DIR = os.path.dirname(LAB_DIR)
 WORKSPACE = os.path.dirname(APP_DIR)
 RL_MJLAB_DIR = os.path.join(WORKSPACE, "unitree_rl_mjlab")
 TASK_IDS = {
-  "getup": "Unitree-G1-Getup",
   "stand": "Unitree-G1-Stand",
 }
-# Staged get-up: one task (and experiment folder) per phase. v2 pipeline
-# trains Roll + StandUp (see g1_app/docs/getup_staged_policies.md §13);
-# A/B/C remain as curriculum/warm-start sources. See
-# g1_app/docs/getup_staged_policies.md.
+# Get-up recovery = one task per phase (see
+# g1_app/docs/getup_staged_policies.md §14). --task getup always requires
+# --stage; there is no single-policy fallback anymore.
 STAGE_TASK_IDS = {
-  "A": "Unitree-G1-Getup-Reposition",
-  "B": "Unitree-G1-Getup-SitUp",
-  "C": "Unitree-G1-Getup-Rise",
   "roll": "Unitree-G1-Getup-Roll",
   "standup": "Unitree-G1-Getup-StandUp",
 }
 STAGE_METRICS = {
-  "A": "supine_success",
-  "B": "stand_on_feet",
-  "C": "stand_success",
   "roll": "roll_success",
   "standup": "stand_success",
 }
@@ -68,12 +56,11 @@ def load_train_module():
 
 def main() -> int:
   ap = argparse.ArgumentParser(description="Train G1 get-up/stand policy + dashboard")
-  ap.add_argument("--task", choices=sorted(TASK_IDS), default="getup",
-                  help="Which policy to train (default: getup)")
+  ap.add_argument("--task", choices=("getup", "stand"), default="getup",
+                   help="Which policy to train (getup always needs --stage)")
   ap.add_argument("--stage", choices=sorted(STAGE_TASK_IDS), default=None,
-                   help="Get-up phase: v2 pipeline uses roll|standup "
-                        "(A|B|C are legacy curriculum stages); "
-                        "default trains the legacy single-policy getup task")
+                   help="Get-up phase, required with --task getup: "
+                        "roll (any fall -> supine) or standup (lying -> stand)")
   ap.add_argument("--num-envs", type=int, default=2048,
                   help="Parallel sim environments (fewer for small GPUs)")
   ap.add_argument("--max-iterations", type=int, default=None,
@@ -87,6 +74,8 @@ def main() -> int:
   ap.add_argument("--port", type=int, default=6006)
   args = ap.parse_args()
 
+  if args.task == "getup" and args.stage is None:
+    ap.error("--task getup requires --stage roll|standup")
   if args.stage is not None and args.task != "getup":
     ap.error("--stage is only valid with --task getup")
 
@@ -127,11 +116,11 @@ def main() -> int:
     import mjlab.tasks  # noqa: F401
     import src.tasks  # noqa: F401
 
-    import training.getup.config.g1  # noqa: F401  (registers Unitree-G1-Getup)
+    import training.getup.config.g1  # noqa: F401  (registers Getup-Roll/-StandUp)
     import training.stand.config.g1  # noqa: F401  (registers Unitree-G1-Stand)
 
     train_mod = load_train_module()
-    if args.stage is not None:
+    if args.task == "getup":
       task_id = STAGE_TASK_IDS[args.stage]
       metric = STAGE_METRICS[args.stage]
     else:
