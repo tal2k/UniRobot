@@ -20,8 +20,8 @@ UniRobot is a simulation platform for training balance and locomotion policies f
 - **A digital-twin apartment.** An 18×11 m, 11-zone apartment — living room,
   kitchen, bedroom, bathroom with grab bars, walker, rugs, doors, clutter — alongside
   5 outdoor test tracks, all regenerable with one command.
-- **One-command UX.** A unified `g1` CLI (`stand`, `gui`, `train`, `record`,
-  `terrains`, `verify`) with `just` shortcuts; headless mode for servers and CI.
+- **One-command UX.** A unified `g1` CLI (`stand`, `gui`, `recover`, `train`,
+  `record`, `terrains`, `verify`) with `just` shortcuts; headless mode for servers and CI.
 - **Train anywhere.** Local GPU runs or free Colab T4 sessions with Drive-backed
   checkpoints, resume support, and TensorBoard — same commands, same configs.
 - **Reproducible by construction.** Pinned upstream submodules, LFS-versioned models,
@@ -90,7 +90,8 @@ events; the friendly dashboard auto-starts on :6006. On Colab, open
 - [x] Balanced standing + walk/stand auto-switching
 - [x] Get-up training pipeline with dashboard and video replay
 - [x] Indoor apartment world for assistive scenarios
-- [ ] Shove-proof refinement (push curriculum, gentler regularization) — spec'd in `docs/training.md`
+- [x] Shove-aware stand training (push curriculum in `training/stand/`)
+- [ ] Staged get-up policies (pipeline + `g1 recover` done; stage A/B/C training runs next)
 - [ ] Everyday apartment tasks: doorway passing, cluttered-floor robustness, gentle contact
 - [ ] Sim-to-real via the SDK2 bindings when the policies earn it
 

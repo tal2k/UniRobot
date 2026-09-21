@@ -7,6 +7,7 @@ but `load_local_cfg()` prefers the yaml and validates shapes.
 
 from __future__ import annotations
 
+import copy
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -73,6 +74,8 @@ def load_local_cfg(path: str = DEPLOY_YAML) -> dict:
 
     m_dt = re.search(r"step_dt:\s*([0-9.]+)", text)
     m_gait = re.search(r"period:\s*([0-9.]+)", text)
+    # NOTE: this regex parsing is deliberately dumb (no YAML dependency).
+    # The length-29 validation below is the real correctness check — keep it.
     cfg = {
         "step_dt": float(m_dt.group(1)) if m_dt else 0.02,
         "stiffness": section_list("stiffness"),
@@ -120,4 +123,4 @@ def get_local_cfg() -> dict:
         return load_local_cfg()
     except Exception as e:  # noqa: BLE001 - fallback path is intentional
         print(f"[config] WARNING: using fallback LOCAL_CFG ({e})")
-        return dict(FALLBACK_LOCAL_CFG)
+        return copy.deepcopy(FALLBACK_LOCAL_CFG)

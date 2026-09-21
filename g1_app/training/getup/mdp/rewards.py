@@ -55,6 +55,23 @@ def stand_pose(
   return torch.exp(-mse / std**2)
 
 
+def target_pose(
+  env: ManagerBasedRlEnv,
+  std: float,
+  target_pos: list[float],
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward joints matching a custom target pose (exp kernel on MSE)."""
+  asset = _robot(env)
+  ids = asset_cfg.joint_ids
+  q = asset.data.joint_pos if ids is None else asset.data.joint_pos[:, ids]
+  q_target = torch.as_tensor(target_pos, device=q.device, dtype=q.dtype)
+  q_target = q_target.flatten().unsqueeze(0)
+  q_target = q_target if ids is None else q_target[:, ids]
+  mse = torch.mean(torch.square(q - q_target), dim=1)
+  return torch.exp(-mse / std**2)
+
+
 def stand_success(
   env: ManagerBasedRlEnv,
   min_height: float,
@@ -153,15 +170,57 @@ def no_head_contact(
 def pelvis_rising(
   env: ManagerBasedRlEnv,
   std: float,
+  target_height: float = 0.78,
 ) -> torch.Tensor:
-  """Reward pelvis rising toward standing height (exp kernel).
+  """Reward pelvis rising toward the stage's target height (exp kernel).
 
   Shapes the early-to-mid rise so the agent learns a smooth upward
-  trajectory rather than a head-down / butt-up collapse.
+  trajectory rather than a head-down / butt-up collapse. The target is
+  parameterized: 0.78 for the final rise, lower (e.g. 0.55) for sit-up.
   """
   pelvis_pos = _robot(env).data.root_link_pos_w[:, 2]
-  target = 0.78
-  return torch.exp(-torch.square((target - pelvis_pos) / std))
+  return torch.exp(-torch.square((target_height - pelvis_pos) / std))
+
+
+def torso_horizontal(
+  env: ManagerBasedRlEnv,
+  std: float,
+) -> torch.Tensor:
+  """Reward the torso lying flat (projected gravity in the body xy-plane).
+
+  |g_xy| is 0 upright and ~1 with the body z axis horizontal, so this is
+  the opposite pole of ``upright_bonus``: Reposition wants the robot flat
+  and stable before SitUp starts.
+  """
+  g_xy = _robot(env).data.projected_gravity_b[:, :2]
+  horiz = torch.norm(g_xy, dim=1)
+  return torch.exp(-torch.square((1.0 - horiz) / std))
+
+
+def supine_success(
+  env: ManagerBasedRlEnv,
+  max_height: float,
+  min_tilt: float,
+  max_pose_err: float,
+  target_pos: list[float],
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Sparse gate: low, horizontal, joints close to supine target.
+
+  1 only when the robot is lying (height below ``max_height``), the torso
+  is horizontal (``min_tilt`` on |g_xy|) and the joint positions are
+  within ``max_pose_err`` RMS of the supine target pose.
+  """
+  h = _robot(env).data.root_link_pos_w[:, 2]
+  tilt = torch.norm(_robot(env).data.projected_gravity_b[:, :2], dim=1)
+  asset = _robot(env)
+  ids = asset_cfg.joint_ids
+  q = asset.data.joint_pos if ids is None else asset.data.joint_pos[:, ids]
+  q_target = torch.as_tensor(target_pos, device=q.device, dtype=q.dtype)
+  q_target = q_target.flatten().unsqueeze(0)
+  q_target = q_target if ids is None else q_target[:, ids]
+  pose_err = torch.sqrt(torch.mean(torch.square(q - q_target), dim=1))
+  return ((h < max_height) & (tilt > min_tilt) & (pose_err < max_pose_err)).float()
 
 
 def com_vel_z(

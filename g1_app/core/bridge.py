@@ -14,11 +14,35 @@ import onnxruntime as ort
 
 try:  # package-relative (pip install / python -m g1_app.cli)
     from .config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, MODELS_DIR, WORKSPACE, get_local_cfg
-    from .math import quat_to_projected_gravity
+    from .getup_stages import (
+        DONE,
+        IDLE,
+        STAGE_SEQUENCE,
+        SUPINE_TARGET,
+        A,
+        C,
+        StageSwitcher,
+        gate_joint_indices,
+        mean_abs_deviation,
+        rms_pose_error,
+    )
+    from .math import euler_to_quat, quat_to_projected_gravity
     from .terrains import TERRAINS, resolve_scene
 except ImportError:  # legacy flat sys.path (APP_DIR on sys.path)
     from core.config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, MODELS_DIR, WORKSPACE, get_local_cfg
-    from core.math import quat_to_projected_gravity
+    from core.getup_stages import (
+        DONE,
+        IDLE,
+        STAGE_SEQUENCE,
+        SUPINE_TARGET,
+        A,
+        C,
+        StageSwitcher,
+        gate_joint_indices,
+        mean_abs_deviation,
+        rms_pose_error,
+    )
+    from core.math import euler_to_quat, quat_to_projected_gravity
     from core.terrains import TERRAINS, resolve_scene
 
 DEFAULT_SCENE = os.path.join(G1_MODEL_DIR, "scene_29dof.xml")
@@ -26,6 +50,10 @@ DEFAULT_SCENE = os.path.join(G1_MODEL_DIR, "scene_29dof.xml")
 # Curated stand-still policy: download/Colab exports land here, next to the
 # walking policy (LFS-tracked). Training snapshots stay under logs/.
 STAND_POLICY_PATH = os.path.join(MODELS_DIR, "g1_stand_policy.onnx")
+
+# Staged get-up policies: curated exports first (models/), newest training
+# snapshot under logs/rsl_rl/<experiment>/ as fallback — same rule as stand.
+STAGE_POLICY_SUFFIX = {"A": "reposition", "B": "situp", "C": "rise"}
 
 # Local 29-DoF config: deploy.yaml is the authority, fallback is built in.
 LOCAL_CFG = get_local_cfg()
@@ -290,6 +318,24 @@ def find_latest_stand_policy():
     return cands[-1] if cands else None
 
 
+def find_latest_stage_policy(stage: str):
+    """Curated stage policy if present, else newest training snapshot.
+
+    Stage is "A" (reposition), "B" (situp) or "C" (rise). Same lookup rule
+    as `find_latest_stand_policy`; returns None when nothing was trained.
+    """
+    import glob
+
+    suffix = STAGE_POLICY_SUFFIX[stage]
+    curated = os.path.join(MODELS_DIR, f"g1_getup_{suffix}_policy.onnx")
+    if os.path.isfile(curated):
+        return curated
+    cands = sorted(glob.glob(os.path.join(
+        WORKSPACE, "unitree_rl_mjlab", "logs", "rsl_rl", f"g1_getup_{suffix}", "*",
+        "policy.onnx")), key=os.path.getmtime)
+    return cands[-1] if cands else None
+
+
 def _csv_meta(session, key):
     for k, v in session.get_modelmeta().custom_metadata_map.items():
         if k == key:
@@ -516,7 +562,10 @@ class WalkStandBridge:
             n = max(1, int(round(self.blend_s / policy.sim_dt)))
             self._blend = min(1.0, self._blend + 1.0 / n)
             policy.target_pos = self._blended_target()
-        policy.apply_pd()
+            # Re-apply PD with the blended target: policy.step_sim() above
+            # already ran PD once with the unblended target, and the blend
+            # only converges by overwriting ctrl on this same sim step.
+            policy.apply_pd()
         self._sim_steps += 1
         return action
 
@@ -535,6 +584,136 @@ class WalkStandBridge:
         if self.active == "stand":
             return h, tilt, self.user_command, "stand"
         return h, tilt, self.user_command, self.walk.stand_state
+
+
+class GetUpBridge:
+    """Staged get-up: Reposition -> SitUp -> Rise with cross-faded switching.
+
+    Holds one 94-dim policy per stage (same obs/action contract as
+    StandStillPolicy) plus an optional balance policy for the standing
+    handoff. `core.getup_stages.StageSwitcher` decides transitions from
+    height/tilt/speed/limb-extension with hysteresis and per-stage timeouts;
+    every switch cross-fades joint targets over blend_s (same rule as
+    WalkStandBridge). PD runs every sim step, inference every 4th (50 Hz).
+
+    Velocity commands are ignored in v1: recovery is a zero-command mode.
+    `telemetry()` reports (height, tilt, user_command, state) with state in
+    {idle, A, B, C, done} for CLI/GUI status lines.
+    """
+
+    def __init__(self, mj_model, mj_data, stage_policies, sim_dt=0.005,
+                 blend_s=0.4, stand_policy_path=None):
+        missing = [s for s in STAGE_SEQUENCE if s not in stage_policies]
+        assert not missing, f"missing stage policies: {missing}"
+        self.mj_model = mj_model
+        self.mj_data = mj_data
+        self.stage_policies = {
+            s: StandStillPolicy(mj_model, mj_data, stage_policies[s], sim_dt=sim_dt)
+            for s in STAGE_SEQUENCE
+        }
+        self.stand = None
+        if stand_policy_path is not None:
+            self.stand = StandStillPolicy(mj_model, mj_data, stand_policy_path,
+                                          sim_dt=sim_dt)
+        ref = self.stage_policies[A]
+        self.switcher = StageSwitcher(dt=ref.STEP_DT)
+        self.active = IDLE
+        self._gate_idx = gate_joint_indices(ref.joint_names)
+        self._gate_q0 = ref.default_pos
+        self.blend_s = blend_s
+        self._blend = 1.0
+        self._prev_target = ref.default_pos.copy()
+        self.sim_dt = sim_dt
+        self._sim_steps = 0
+        self.default_pos = ref.default_pos.copy()
+        self.user_command = np.zeros(3, dtype=np.float32)
+        print(f"Mode: staged get-up ({' -> '.join(STAGE_SEQUENCE)})"
+              + (", balance handoff" if self.stand is not None
+                 else ", hold pose on done"))
+
+    def _active_policy(self):
+        if self.active == IDLE:
+            return self.stand if self.stand is not None else self.stage_policies[A]
+        if self.active == DONE:
+            return self.stand if self.stand is not None else self.stage_policies[C]
+        return self.stage_policies[self.active]
+
+    @property
+    def mode(self):
+        return f"getup({self.active})"
+
+    @property
+    def last_action(self):
+        return self._active_policy().last_action
+
+    def set_command(self, vx, vy, wz):
+        # Stored for telemetry/switch decisions; recovery ignores commands.
+        self.user_command = np.array([vx, vy, wz], dtype=np.float32)
+        for p in self.stage_policies.values():
+            p.set_command(vx, vy, wz)
+        if self.stand is not None:
+            self.stand.set_command(vx, vy, wz)
+
+    def _base_state(self):
+        return self.stage_policies[A]._base_state()
+
+    def _height_tilt(self):
+        h = float(self.mj_data.qpos[2])
+        _, grav, _, _ = self._base_state()
+        return h, float(np.linalg.norm(grav[:2]))
+
+    def _metrics(self):
+        """(height, tilt, root speed, limb extension, supine pose error)."""
+        h, tilt = self._height_tilt()
+        speed = float(np.linalg.norm(self.mj_data.qvel[0:2]))
+        ref = self.stage_policies[A]
+        q = np.array(self.mj_data.qpos[7:][ref.muj_q], dtype=np.float32)
+        extension = mean_abs_deviation(q, self._gate_q0, self._gate_idx)
+        # q is in policy joint order; SUPINE_TARGET is all zeros, so the RMS
+        # is order-independent and exactly the training `supine_success` pose
+        # error the A gate mirrors.
+        pose_err = rms_pose_error(q, SUPINE_TARGET)
+        return h, tilt, speed, extension, pose_err
+
+    def step_sim(self):
+        policy = self._active_policy()
+        if self._sim_steps % policy.decimation == 0:
+            h, tilt, speed, extension, pose_err = self._metrics()
+            wanted = self.switcher.update(h, tilt, speed, extension, pose_err)
+            if wanted != self.active:
+                self._prev_target = self._blended_target().copy()
+                self.active = wanted
+                self._blend = 0.0
+                print(f"getup stage -> {wanted} (h={h:.2f} tilt={tilt:.2f} "
+                       f"speed={speed:.2f} ext={extension:.2f} "
+                       f"pose_err={pose_err:.2f})")
+                policy = self._active_policy()
+            # Idle without a balance policy: hold the nominal pose.
+            if self.active != IDLE or self.stand is not None:
+                action = policy.update_policy()
+            else:
+                action = None
+        else:
+            action = None
+        if self._blend < 1.0:
+            n = max(1, int(round(self.blend_s / self.sim_dt)))
+            self._blend = min(1.0, self._blend + 1.0 / n)
+            policy.target_pos = self._blended_target()
+        policy.apply_pd()
+        self._sim_steps += 1
+        return action
+
+    def _blended_target(self):
+        a = self._blend
+        return ((1.0 - a) * self._prev_target
+                + a * self._active_policy().target_pos).astype(np.float32)
+
+    def apply_pd(self):
+        self._active_policy().apply_pd()
+
+    def telemetry(self):
+        h, tilt = self._height_tilt()
+        return h, tilt, self.user_command, self.active
 
 
 def reset_standing(mj_model, mj_data, default_pos, height=0.78):
@@ -610,6 +789,104 @@ def run_stand(policy_path=DEFAULT_LOCAL_POLICY, scene=DEFAULT_SCENE,
     if viewer is not None:
         viewer.close()
     return not fell
+
+
+def reset_fallen(mj_model, mj_data, default_pos, muj_q=None, seed=0,
+                 z_range=(0.06, 0.30)):
+    """Random sprawl matching the Reposition training reset (seeded).
+
+    muj_q maps policy joint order -> offsets inside qpos[7:] (see
+    StandStillPolicy); None assumes the orders already match.
+    """
+    import math
+
+    rng = np.random.default_rng(seed)
+    mj_data.qpos[0:2] = rng.uniform(-0.3, 0.3, 2)
+    mj_data.qpos[2] = float(rng.uniform(*z_range))
+    mj_data.qpos[3:7] = euler_to_quat(
+        float(rng.uniform(-math.pi, math.pi)),
+        float(rng.uniform(-math.pi / 2, math.pi / 2)),
+        float(rng.uniform(-math.pi, math.pi)))
+    if muj_q is None:
+        muj_q = np.arange(len(default_pos))
+    mj_data.qpos[7:][muj_q] = (
+        np.asarray(default_pos, dtype=np.float64)
+        + rng.uniform(-0.6, 0.6, len(default_pos)))
+    mj_data.qvel[:] = 0.0
+    mj_data.ctrl[:] = 0.0
+    mujoco.mj_forward(mj_model, mj_data)
+
+
+def run_recover(stage_policies=None, scene=DEFAULT_SCENE, seconds=15.0,
+                sim_dt=0.005, headless=False, log_hz=2.0,
+                stand_policy_path=None, start="fallen", seed=0):
+    """Staged get-up rollout (viewer or headless) from a fallen start.
+
+    stage_policies maps "A"/"B"/"C" to ONNX paths; None resolves each with
+    `find_latest_stage_policy`. Hands off to the balance policy at DONE when
+    one is available. Returns True when the robot ends standing.
+    """
+    mj_model = mujoco.MjModel.from_xml_path(scene)
+    mj_model.opt.timestep = sim_dt
+    mj_data = mujoco.MjData(mj_model)
+
+    if stage_policies is None:
+        stage_policies = {}
+        for s in STAGE_SEQUENCE:
+            path = find_latest_stage_policy(s)
+            if path is None:
+                raise FileNotFoundError(
+                    f"no stage-{s} policy: train it with "
+                    f"`g1 train -- --task getup --stage {s}` or pass --policy-{s.lower()}")
+            stage_policies[s] = path
+    if stand_policy_path is None:
+        stand_policy_path = find_latest_stand_policy()
+
+    bridge = GetUpBridge(mj_model, mj_data, stage_policies, sim_dt=sim_dt,
+                         stand_policy_path=stand_policy_path)
+    if start == "fallen":
+        reset_fallen(mj_model, mj_data, bridge.default_pos,
+                     muj_q=bridge.stage_policies[A].muj_q, seed=seed)
+    else:
+        reset_standing(mj_model, mj_data, bridge.default_pos)
+
+    viewer = None
+    if not headless:
+        try:
+            viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
+        except Exception as e:
+            print(f"viewer unavailable ({e}), continuing headless")
+            headless = True
+
+    n_steps = int(seconds / sim_dt)
+    log_every = max(1, int((1.0 / log_hz) / sim_dt))
+    t0 = time.perf_counter()
+    for step in range(n_steps):
+        mujoco.mj_step(mj_model, mj_data)
+        bridge.step_sim()
+        if viewer is not None:
+            viewer.sync()
+            if not viewer.is_running():
+                break
+        if not np.all(np.isfinite(mj_data.qpos)):
+            print(f"simulation diverged at t={step * sim_dt:.2f}s")
+            if viewer is not None:
+                viewer.close()
+            return False
+        if step % log_every == 0:
+            h, tilt, _, state = bridge.telemetry()
+            print(f"t={step * sim_dt:5.2f}s state={state:4s} h={h:.3f} tilt={tilt:.3f}")
+        if not headless and viewer is not None:
+            time_until = sim_dt - (time.perf_counter() - t0 - step * sim_dt)
+            if time_until > 0:
+                time.sleep(time_until)
+    h, tilt, _, state = bridge.telemetry()
+    # Same definition of "standing" as the Rise handoff gate (C).
+    stood = bool(h > 0.72 and tilt < 0.30)
+    print(f"done: state={state} final_h={h:.3f} tilt={tilt:.3f} stood={stood}")
+    if viewer is not None:
+        viewer.close()
+    return stood
 
 
 if __name__ == "__main__":

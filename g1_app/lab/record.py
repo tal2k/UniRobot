@@ -19,17 +19,20 @@ import onnxruntime as ort
 
 try:
     from g1_app.core.config import G1_MODEL_DIR, resolve_videos_dir
+    from g1_app.core.getup_stages import SUPINE_TARGET
     from g1_app.core.math import euler_to_quat, quat_to_projected_gravity
 except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     try:
         from core.config import G1_MODEL_DIR, resolve_videos_dir
+        from core.getup_stages import SUPINE_TARGET
         from core.math import euler_to_quat, quat_to_projected_gravity
     except ImportError:  # legacy flat layout
         from core.math import euler_to_quat, quat_to_projected_gravity  # type: ignore
 
         G1_MODEL_DIR = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "g1")
+        SUPINE_TARGET = [0.0] * 29  # must match core/getup_stages.py
 
         def resolve_videos_dir():  # type: ignore
             base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -116,6 +119,24 @@ class GetupRollout:
     data.ctrl[:] = 0.0
     mujoco.mj_forward(self.model, data)
 
+  def reset_supine(self, data):
+    """Reset to supine neutral (matching Stage B training reset)."""
+    # Lying flat on back, height ~0.15
+    data.qpos[0:2] = self.rng.uniform(-0.1, 0.1, 2)
+    data.qpos[2] = float(self.rng.uniform(0.06, 0.20))
+    # Supine: pitch = -pi/2, small roll/yaw noise
+    roll = float(self.rng.uniform(-0.4, 0.4))
+    pitch = -math.pi / 2 + float(self.rng.uniform(-0.4, 0.4))
+    yaw = float(self.rng.uniform(-math.pi, math.pi))
+    data.qpos[3:7] = euler_to_quat(roll, pitch, yaw)
+    # Joints at the shared supine target (flat on back, extended limbs) + noise.
+    data.qpos[7:][self.muj_q] = (
+      np.asarray(SUPINE_TARGET, dtype=np.float32)
+      + self.rng.uniform(-0.2, 0.2, len(self.default_pos)))
+    data.qvel[:] = 0.0
+    data.ctrl[:] = 0.0
+    mujoco.mj_forward(self.model, data)
+
   def reset_standing(self, data):
     data.qpos[0:2] = self.rng.uniform(-0.05, 0.05, 2)
     data.qpos[2] = float(self.rng.uniform(0.76, 0.80))
@@ -171,7 +192,7 @@ def find_latest_run(experiment="g1_getup"):
 
 
 def record(policy_path, episodes=3, seconds=8.0, fps=20, width=480, height=360,
-           out_path=None, seed=0, standing=False):
+           out_path=None, seed=0, standing=False, start="fallen"):
   os.environ.setdefault("MUJOCO_GL", "egl")
   roller = GetupRollout(policy_path, seed=seed)
   data = mujoco.MjData(roller.model)
@@ -192,6 +213,8 @@ def record(policy_path, episodes=3, seconds=8.0, fps=20, width=480, height=360,
     for ep in range(episodes):
       if standing:
         roller.reset_standing(data)
+      elif start == "supine":
+        roller.reset_supine(data)
       else:
         roller.reset_fallen(data)
       roller.last_action = np.zeros_like(roller.last_action)
@@ -238,6 +261,8 @@ def main():
                     help="Experiment folder under logs/rsl_rl (g1_getup|g1_stand)")
     ap.add_argument("--stand", action="store_true",
                     help="Start episodes standing (for stand policy) not fallen")
+    ap.add_argument("--start", choices=["fallen", "supine"], default="fallen",
+                    help="Start state: fallen (random sprawl) or supine (flat on back, extended)")
     ap.add_argument("--episodes", type=int, default=3)
     ap.add_argument("--seconds", type=float, default=8.0)
     ap.add_argument("--fps", type=int, default=20)
@@ -250,7 +275,8 @@ def main():
         print(f"run: {run_dir}")
         policy_path = latest_policy_onnx(run_dir)
     record(policy_path, episodes=args.episodes, seconds=args.seconds,
-           fps=args.fps, out_path=args.out, seed=args.seed, standing=args.stand)
+           fps=args.fps, out_path=args.out, seed=args.seed, standing=args.stand,
+           start=args.start)
 
 
 if __name__ == "__main__":

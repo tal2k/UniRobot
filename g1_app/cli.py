@@ -8,6 +8,7 @@ Commands:
     stand      viewer-only balanced stand demo
     gui        3D viewer + tkinter control panel
     check      10 s tkinter self-test
+    recover    staged get-up (Reposition -> SitUp -> Rise) from a fall
     train      training + dashboard (--task getup|stand, default getup)
     train-stand stand-still balance training + dashboard (shortcut)
     dashboard  friendly live dashboard (:6006)
@@ -75,6 +76,23 @@ def cmd_check(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recover(args: argparse.Namespace) -> int:
+    from g1_app.core.bridge import run_recover
+    from g1_app.core.terrains import resolve_scene
+
+    scene = resolve_scene(args.terrain, args.scene)
+    stage_policies = {
+        "A": args.policy_a,
+        "B": args.policy_b,
+        "C": args.policy_c,
+    }
+    stage_policies = {k: v for k, v in stage_policies.items() if v is not None}
+    ok = run_recover(stage_policies or None, scene, args.seconds, args.sim_dt,
+                     args.headless, stand_policy_path=args.stand_policy,
+                     start=args.start, seed=args.seed)
+    return 0 if ok else 1
+
+
 def cmd_train(args: argparse.Namespace) -> int:
     # lab.train has its own argparse; forward sys.argv style.
     sys.argv = ["g1 train"] + args.forward
@@ -135,6 +153,8 @@ def cmd_verify(_args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from g1_app.core.terrains import TERRAINS
+
     ap = argparse.ArgumentParser(prog="g1", description="G1 humanoid app CLI")
     sub = ap.add_subparsers(dest="command", required=True)
 
@@ -152,6 +172,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("check", help="tkinter env self-test")
     p.set_defaults(func=cmd_check)
+
+    p = sub.add_parser("recover", help="staged get-up from a fall")
+    p.add_argument("--scene", default=None, help="MuJoCo scene XML (overrides --terrain)")
+    p.add_argument("--terrain", choices=sorted(TERRAINS), default="flat")
+    p.add_argument("--policy-a", default=None,
+                   help="Reposition ONNX (default: curated, else latest "
+                        "g1_getup_reposition snapshot)")
+    p.add_argument("--policy-b", default=None,
+                   help="SitUp ONNX (default: curated, else latest g1_getup_situp snapshot)")
+    p.add_argument("--policy-c", default=None,
+                   help="Rise ONNX (default: curated, else latest g1_getup_rise snapshot)")
+    p.add_argument("--stand-policy", default=None,
+                   help="Balance policy for the DONE handoff (default: "
+                        "models/g1_stand_policy.onnx, else latest snapshot)")
+    p.add_argument("--start", choices=("fallen", "standing"), default="fallen")
+    p.add_argument("--seconds", type=float, default=15.0)
+    p.add_argument("--sim-dt", type=float, default=0.005)
+    p.add_argument("--headless", action="store_true")
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(func=cmd_recover)
 
     p = sub.add_parser("train", help="get-up/stand training + dashboard")
     p.add_argument("forward", nargs=argparse.REMAINDER,
@@ -177,6 +217,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="experiment folder under logs/rsl_rl (g1_getup|g1_stand)")
     p.add_argument("--stand", action="store_true",
                    help="start episodes standing (for stand policy) not fallen")
+    p.add_argument("--start", choices=["fallen", "supine"], default="fallen",
+                   help="start state: fallen (random sprawl) or supine (flat on back, extended)")
     p.add_argument("--episodes", type=int, default=3)
     p.add_argument("--seconds", type=float, default=8.0)
     p.add_argument("--fps", type=int, default=20)

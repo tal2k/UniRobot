@@ -103,6 +103,20 @@ METRICS = {
     "Vertical CoM velocity",
     "Reward for positive vertical CoM velocity (exp kernel). Directly shapes the rising motion — the agent gets immediate gradient when its centre of mass moves up, blocking head-down / butt-up shortcuts.",
   ),
+  "Episode_Reward/supine_success": (
+    "Supine success",
+    "Bonus for ending a Reposition episode flat on the back in the neutral pose (max 3.0). "
+    "This is the Stage-A money chart — when it climbs toward 3, the robot reliably untangles into the sit-up start pose.",
+  ),
+  "Episode_Reward/supine_pose": (
+    "Supine pose",
+    "How closely the joints match the flat-on-back neutral pose (max 1.5). "
+    "Dense shaping behind the sparse supine bonus.",
+  ),
+  "Episode_Reward/torso_horizontal": (
+    "Torso horizontal",
+    "Reward for the torso lying flat (max 1.0). The opposite pole of the upright bonus — Reposition wants the robot flat and stable before SitUp starts.",
+  ),
   "Episode_Reward/stand_still": (
     "Standing still",
     "Reward for a quiet root (low body velocity, max 1.0). Recovery steps are "

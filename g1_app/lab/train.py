@@ -4,6 +4,9 @@ Canonical home (moved from legacy train_getup.py). Prefer:
 
     g1 train                        # get-up policy (default)
     g1 train -- --task stand        # stand-still balance policy
+    g1 train -- --task getup --stage A   # staged get-up: Reposition
+    g1 train -- --task getup --stage B   # staged get-up: SitUp
+    g1 train -- --task getup --stage C   # staged get-up: Rise
     g1 train-stand -- --num-envs 1024
     g1 train -- --num-envs 1024 --max-iterations 2000
 """
@@ -23,6 +26,18 @@ RL_MJLAB_DIR = os.path.join(WORKSPACE, "unitree_rl_mjlab")
 TASK_IDS = {
   "getup": "Unitree-G1-Getup",
   "stand": "Unitree-G1-Stand",
+}
+# Staged get-up: one task (and experiment folder) per phase. See
+# g1_app/docs/getup_staged_policies.md.
+STAGE_TASK_IDS = {
+  "A": "Unitree-G1-Getup-Reposition",
+  "B": "Unitree-G1-Getup-SitUp",
+  "C": "Unitree-G1-Getup-Rise",
+}
+STAGE_METRICS = {
+  "A": "supine_success",
+  "B": "stand_on_feet",
+  "C": "stand_success",
 }
 
 
@@ -47,6 +62,9 @@ def main() -> int:
   ap = argparse.ArgumentParser(description="Train G1 get-up/stand policy + dashboard")
   ap.add_argument("--task", choices=sorted(TASK_IDS), default="getup",
                   help="Which policy to train (default: getup)")
+  ap.add_argument("--stage", choices=sorted(STAGE_TASK_IDS), default=None,
+                  help="Staged get-up phase A|B|C (requires --task getup); "
+                       "default trains the legacy single-policy getup task")
   ap.add_argument("--num-envs", type=int, default=2048,
                   help="Parallel sim environments (fewer for small GPUs)")
   ap.add_argument("--max-iterations", type=int, default=None,
@@ -59,6 +77,9 @@ def main() -> int:
                   help="Also launch raw TensorBoard (port+1) for deep dives")
   ap.add_argument("--port", type=int, default=6006)
   args = ap.parse_args()
+
+  if args.stage is not None and args.task != "getup":
+    ap.error("--stage is only valid with --task getup")
 
   sys.path.insert(0, APP_DIR)
   sys.path.insert(0, RL_MJLAB_DIR)
@@ -101,7 +122,12 @@ def main() -> int:
     import training.stand.config.g1  # noqa: F401  (registers Unitree-G1-Stand)
 
     train_mod = load_train_module()
-    task_id = TASK_IDS[args.task]
+    if args.stage is not None:
+      task_id = STAGE_TASK_IDS[args.stage]
+      metric = STAGE_METRICS[args.stage]
+    else:
+      task_id = TASK_IDS[args.task]
+      metric = "stand_success"
     cfg = train_mod.TrainConfig.from_task(task_id)
     cfg.agent.logger = "tensorboard"
     cfg.env.scene.num_envs = args.num_envs
@@ -117,7 +143,7 @@ def main() -> int:
 
     print(f"[all] Training {task_id}: {args.num_envs} envs, "
           f"{cfg.agent.max_iterations} iterations", flush=True)
-    print(f"[all] Watch Episode_Reward/stand_success at "
+    print(f"[all] Watch Episode_Reward/{metric} at "
           f"http://localhost:{args.port}/", flush=True)
     train_mod.launch_training(task_id, cfg)
     print("[all] Training finished.")

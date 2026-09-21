@@ -11,7 +11,7 @@ Recorded 2026-09-19 (`git rev-parse --short HEAD`):
 | `unitree_mujoco` | `1eb6642` | Merge pull request #131 from keeprobot/main |
 | `unitree_rl_mjlab` | `1425b15` | Fix the warnings during rough-terrain training. |
 | `unitree_sdk2_python` | `65691c8` | Correct the order and spelling errors in the H2 joint index. |
-| `g1_app` (ours) | `c678784` + uncommitted Stage-II v2 (head/no_head, pelvis_rising, com_vel_z) | Stage-II v2 getup recipe |
+| `g1_app` (ours) | `47c468e` + uncommitted staged get-up (Reposition→SitUp→Rise tasks, GetUpBridge, `g1 recover`) | staged multi-policy recovery |
 
 Full SHAs: resolve with `git -C <dir> rev-parse HEAD`.
 

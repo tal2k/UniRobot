@@ -1,16 +1,15 @@
-"""Get-up (fall recovery) task configuration — Stage II refinement recipe.
+"""SitUp (Stage B) task configuration — staged get-up phase 2.
 
-Episodes start with the robot lying in a random fallen pose. Rewards demand
-standing the *correct* way (tall, upright, supported by both feet — never by
-head/elbows) and *gently* (torque/velocity/smoothness penalties throughout).
-There is no failure termination: every episode runs its full length.
+Episodes start from the lying family Stage A ends in: supine, prone or on
+the side, near the ground, joints offset up to 0.4 rad. The goal is a
+*crouch*: pelvis lifted (target 0.55), torso mostly upright, both feet
+loaded. Rewards reuse the final-rise terms with stage-B targets (wide
+height kernel, crouch-level support gates).
 
-Run this after a discovery run (Stage I, weak regularization) with --resume:
-refinement, not restart (HUMANUP-style two-stage curriculum).
+Advance gate (deployment, see `core/getup_stages.py`): height > 0.55 and
+|projected gravity xy| < 0.70, held 10 policy ticks.
 
-Staged get-up: this recipe is Stage C (Rise, crouch -> stand). The staged
-task id is `Unitree-G1-Getup-Rise`; `Unitree-G1-Getup` remains the legacy
-single-policy task.
+Run: `g1 train -- --task getup --stage B`.
 """
 
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -25,8 +24,8 @@ import training.getup.mdp as mdp
 from training.getup import stage_common as sc
 
 
-def make_getup_env_cfg() -> ManagerBasedRlEnvCfg:
-  """Create base fall-recovery task configuration."""
+def make_situp_env_cfg() -> ManagerBasedRlEnvCfg:
+  """Create the SitUp (Stage B) task configuration."""
 
   sensors = sc.make_sensors()
   left_foot_cfg = sensors["left_foot_contact"]
@@ -39,28 +38,19 @@ def make_getup_env_cfg() -> ManagerBasedRlEnvCfg:
   ##
 
   events = {
-    # Random fallen start: any orientation, low height, sprawled joints.
-    "reset_fallen": EventTermCfg(
-      func=mdp.reset_root_state_uniform,
+    # Lying start family (Stage A output distribution).
+    "reset_lying": EventTermCfg(
+      func=mdp.reset_lying_pose,
       mode="reset",
-      params={
-        "pose_range": {
-          "x": (-0.3, 0.3),
-          "y": (-0.3, 0.3),
-          "z": (0.1, 0.5),
-          "roll": (-3.14, 3.14),
-          "pitch": (-1.57, 1.57),
-          "yaw": (-3.14, 3.14),
-        },
-        "velocity_range": {},
-      },
+      params={},
     ),
     "reset_robot_joints": EventTermCfg(
-      func=mdp.reset_joints_by_offset,
+      func=mdp.reset_joints_to_target,
       mode="reset",
       params={
-        "position_range": (-0.6, 0.6),
-        "velocity_range": (-0.2, 0.2),
+        "target_pos": mdp.SUPINE_TARGET,
+        "position_range": (-0.2, 0.2),
+        "velocity_range": (-0.1, 0.1),
         "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
       },
     ),
@@ -68,15 +58,20 @@ def make_getup_env_cfg() -> ManagerBasedRlEnvCfg:
   }
 
   ##
-  # Rewards
+  # Rewards (existing rise terms, stage-B targets)
   ##
 
   rewards = {
-    # --- task: stand up the correct way (on the feet, head up) ---
+    # --- task: rise from the floor onto loaded feet ---
+    "pelvis_rising": RewardTermCfg(
+      func=mdp.pelvis_rising,
+      weight=1.5,
+      params={"std": 0.35, "target_height": 0.55},
+    ),
     "stand_height": RewardTermCfg(
       func=mdp.stand_height,
       weight=1.0,
-      params={"target_height": 0.78, "std": 0.35},
+      params={"target_height": 0.55, "std": 0.35},
     ),
     "upright": RewardTermCfg(
       func=mdp.upright_bonus,
@@ -94,12 +89,12 @@ def make_getup_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
     "stand_on_feet": RewardTermCfg(
       func=mdp.stand_on_feet,
-      weight=3.0,
+      weight=2.0,
       params={
         "left_sensor": left_foot_cfg.name,
         "right_sensor": right_foot_cfg.name,
-        "min_height": 0.70,
-        "max_tilt": 0.35,
+        "min_height": 0.50,
+        "max_tilt": 0.70,
       },
     ),
     "stand_pose": RewardTermCfg(
@@ -110,28 +105,18 @@ def make_getup_env_cfg() -> ManagerBasedRlEnvCfg:
         "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
       },
     ),
-    "stand_success": RewardTermCfg(
-      func=mdp.stand_success,
-      weight=3.0,
-      params={"min_height": 0.70, "max_tilt": 0.3},
-    ),
     "bad_support": RewardTermCfg(
       func=mdp.bad_support,
       weight=-3.0,
       params={
         "sensor_name": upper_touch_cfg.name,
-        "min_height": 0.55,
+        "min_height": 0.45,
       },
     ),
     "no_head_contact": RewardTermCfg(
       func=mdp.no_head_contact,
       weight=-2.0,
-      params={"min_height": 0.45},
-    ),
-    "pelvis_rising": RewardTermCfg(
-      func=mdp.pelvis_rising,
-      weight=1.5,
-      params={"std": 0.35},
+      params={"min_height": 0.40},
     ),
     "com_vel_z": RewardTermCfg(
       func=mdp.com_vel_z,
@@ -151,13 +136,12 @@ def make_getup_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
     "joint_torques": RewardTermCfg(func=mdp.joint_torques_l2, weight=-3.0e-6),
     "joint_vel": RewardTermCfg(func=mdp.joint_vel_l2, weight=-3.0e-4),
-    "joint_acc_l2": RewardTermCfg(func=mdp.joint_acc_l2, weight=-1.0e-6),
     "joint_pos_limits": RewardTermCfg(func=mdp.joint_pos_limits, weight=-5.0),
     "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.05),
   }
 
   ##
-  # Terminations (timeout only — falling over is the starting state here)
+  # Terminations (timeout only — lying down is the start state)
   ##
 
   terminations = {
@@ -189,5 +173,5 @@ def make_getup_env_cfg() -> ManagerBasedRlEnvCfg:
     viewer=sc.make_viewer_cfg(),
     sim=sc.make_sim_cfg(),
     decimation=4,
-    episode_length_s=8.0,
+    episode_length_s=10.0,
   )
