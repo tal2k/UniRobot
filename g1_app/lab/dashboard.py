@@ -116,6 +116,36 @@ METRICS = {
     "How closely the torso gravity matches flat face-up (max 1.5). Dense "
     "shaping behind the sparse roll bonus.",
   ),
+  "Episode_Reward/brace_success": (
+    "Brace success",
+    "Bonus for ending a Brace episode safely: settled on the ground or "
+    "stumbled back to standing (max 2.0). The independent brace money "
+    "chart — climbs when doomed falls end without damage.",
+  ),
+  "Episode_Reward/torso_impact": (
+    "Torso impact",
+    "Per-step torso-ground force (max 1.0, priced at -3.0). The vulnerable "
+    "core proxy (the head rides on the torso — no separate head link): "
+    "faceplants and chest-slams spike it, distributed back landings do not.",
+  ),
+  "Episode_Reward/arm_impact": (
+    "Arm impact",
+    "Per-step arm-ground force (max 1.0, priced at only -0.3). Arms are the "
+    "cheap absorbers — this is where protective contact should show up.",
+  ),
+  "Episode_Reward/leg_impact": (
+    "Leg impact",
+    "Per-step leg-ground force (max 1.0, priced at -0.8).",
+  ),
+  "Episode_Reward/landed_face_up": (
+    "Landed face-up",
+    "Shaping toward back-landings (max 0.5): the head-safe way to meet "
+    "the ground.",
+  ),
+  "Episode_Reward/pelvis_impact": (
+    "Pelvis impact",
+    "Per-step pelvis-ground force (max 1.0, priced at -1.0).",
+  ),
   "Episode_Reward/stand_still": (
     "Standing still",
     "Reward for a quiet root (low body velocity, max 1.0). Recovery steps are "
@@ -131,12 +161,16 @@ MAX_POINTS = 400
 # (and METRICS above) when rewards change — the page template below only
 # carries a placeholder.
 CHART_GROUPS = [
-  ["Episode_Reward/stand_success", "Episode_Reward/roll_success"],
+  ["Episode_Reward/stand_success", "Episode_Reward/roll_success",
+   "Episode_Reward/brace_success"],
   ["Episode_Reward/stand_height", "Episode_Reward/upright",
    "Episode_Reward/stand_on_feet", "Episode_Reward/feet_force",
    "Episode_Reward/stand_still", "Episode_Reward/supine_pose",
    "Episode_Reward/torso_horizontal", "Episode_Reward/face_up",
-   "Episode_Reward/pelvis_rising", "Episode_Reward/com_vel_z"],
+   "Episode_Reward/pelvis_rising", "Episode_Reward/com_vel_z",
+   "Episode_Reward/torso_impact", "Episode_Reward/arm_impact",
+   "Episode_Reward/leg_impact", "Episode_Reward/pelvis_impact",
+   "Episode_Reward/landed_face_up"],
   ["Train/mean_reward"],
 ]
 
@@ -455,7 +489,7 @@ async function tick(){
     ["Elapsed",fmtT(r.elapsed_s)],["Speed",(r.steps_per_second?Math.round(r.steps_per_second).toLocaleString()+" steps/s":"–")],
     ["ETA",r.eta_s!=null?fmtT(r.eta_s):"–"],
     ["Environments",r.num_envs||"–"],
-    ["Success now",(r.metrics["Episode_Reward/stand_success"]||r.metrics["Episode_Reward/roll_success"]||{last:"–"}).last?.toFixed?.(2)??"–"],
+    ["Success now",(r.metrics["Episode_Reward/stand_success"]||r.metrics["Episode_Reward/roll_success"]||r.metrics["Episode_Reward/brace_success"]||{last:"–"}).last?.toFixed?.(2)??"–"],
   ];
   document.getElementById("stats").innerHTML=S.map(([l,v])=>`<div><div class="stat">${v}</div><div class="lbl">${l}</div></div>`).join("");
   const v=r.video,vid=document.getElementById("vid");

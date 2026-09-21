@@ -4,6 +4,7 @@ Canonical home. Prefer:
 
     g1 train -- --task getup --stage roll      # v2 funnel: any fall -> supine
     g1 train -- --task getup --stage standup   # v2 merged: lying -> stand
+    g1 train -- --task getup --stage brace     # independent: doomed fall -> safe landing
     g1 train -- --task stand                   # stand-still balance policy
     g1 train-stand -- --num-envs 1024
     g1 train -- --task getup --stage roll --num-envs 1024 --max-iterations 2000
@@ -26,14 +27,17 @@ TASK_IDS = {
 }
 # Get-up recovery = one task per phase (see
 # g1_app/docs/getup_staged_policies.md §14). --task getup always requires
-# --stage; there is no single-policy fallback anymore.
+# --stage; there is no single-policy fallback anymore. Brace is an
+# independent pre-impact stage (never chained to roll/standup).
 STAGE_TASK_IDS = {
   "roll": "Unitree-G1-Getup-Roll",
   "standup": "Unitree-G1-Getup-StandUp",
+  "brace": "Unitree-G1-Getup-Brace",
 }
 STAGE_METRICS = {
   "roll": "roll_success",
   "standup": "stand_success",
+  "brace": "brace_success",
 }
 
 
@@ -60,7 +64,8 @@ def main() -> int:
                    help="Which policy to train (getup always needs --stage)")
   ap.add_argument("--stage", choices=sorted(STAGE_TASK_IDS), default=None,
                    help="Get-up phase, required with --task getup: "
-                        "roll (any fall -> supine) or standup (lying -> stand)")
+                        "roll (any fall -> supine), standup (lying -> stand) "
+                        "or brace (doomed fall -> safe landing, independent)")
   ap.add_argument("--num-envs", type=int, default=2048,
                   help="Parallel sim environments (fewer for small GPUs)")
   ap.add_argument("--max-iterations", type=int, default=None,
@@ -75,7 +80,7 @@ def main() -> int:
   args = ap.parse_args()
 
   if args.task == "getup" and args.stage is None:
-    ap.error("--task getup requires --stage roll|standup")
+    ap.error("--task getup requires --stage roll|standup|brace")
   if args.stage is not None and args.task != "getup":
     ap.error("--stage is only valid with --task getup")
 

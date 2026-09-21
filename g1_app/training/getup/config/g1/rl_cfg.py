@@ -1,4 +1,4 @@
-"""RL configuration for the v2 Unitree G1 get-up tasks (Roll + StandUp)."""
+"""RL configuration for the G1 get-up tasks (Roll + StandUp + Brace)."""
 
 from mjlab.rl import (
   RslRlModelCfg,
@@ -54,3 +54,8 @@ def unitree_g1_getup_roll_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
 def unitree_g1_getup_standup_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """StandUp (v2 merged get-up) runner."""
   return _runner_cfg("g1_getup_standup", 5001)
+
+
+def unitree_g1_getup_brace_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Brace (independent pre-impact stage) runner."""
+  return _runner_cfg("g1_getup_brace", 3000)

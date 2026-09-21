@@ -102,6 +102,16 @@ class GetupRollout:
     data.ctrl[:] = 0.0
     mujoco.mj_forward(self.model, data)
 
+  def reset_pushed(self, data):
+    """Stand + shove (brace eval: the guard's trigger domain, standalone)."""
+    self.reset_standing(data)
+    heading = float(self.rng.uniform(-math.pi, math.pi))
+    speed = float(self.rng.uniform(1.2, 2.2))
+    data.qvel[0] = speed * math.cos(heading)
+    data.qvel[1] = speed * math.sin(heading)
+    data.qvel[3:6] = self.rng.uniform(-0.5, 0.5, 3)
+    mujoco.mj_forward(self.model, data)
+
 
 def latest_policy_onnx(run_dir):
   p = os.path.join(run_dir, "policy.onnx")
@@ -143,6 +153,8 @@ def record(policy_path, episodes=3, seconds=8.0, fps=20, width=480, height=360,
     for ep in range(episodes):
       if standing:
         roller.reset_standing(data)
+      elif start == "pushed":
+        roller.reset_pushed(data)
       elif start == "supine":
         roller.reset_supine(data)
       elif start == "prone":
@@ -166,7 +178,12 @@ def record(policy_path, episodes=3, seconds=8.0, fps=20, width=480, height=360,
           q = data.sensordata[pol.imu_quat_adr:pol.imu_quat_adr + 4]
           tilts.append(float(np.linalg.norm(quat_to_projected_gravity(q)[:2])))
       tilt_end = float(np.mean(tilts)) if tilts else 1.0
-      success = bool(min_h > 0.35 and max_h > 0.70 and tilt_end < 0.3)
+      if start == "pushed":
+        # Brace eval: success = rode out the fall (down, settled, no
+        # divergence) — standing up is NOT the job here.
+        success = bool(min_h < 0.45 and max_h < 0.80)
+      else:
+        success = bool(min_h > 0.35 and max_h > 0.70 and tilt_end < 0.3)
       results["episodes"].append(
         {"success": success, "min_h": round(min_h, 3),
          "max_h": round(max_h, 3), "tilt_end": round(tilt_end, 3)})
@@ -190,12 +207,14 @@ def main():
                          "overrides --run-dir/--experiment lookup")
     ap.add_argument("--experiment", default="g1_getup_standup",
                     help="Experiment folder under logs/rsl_rl "
-                         "(g1_getup_standup|g1_getup_roll|g1_stand)")
+                         "(g1_getup_standup|g1_getup_roll|g1_getup_brace|g1_stand)")
     ap.add_argument("--stand", action="store_true",
                     help="Start episodes standing (for stand policy) not fallen")
-    ap.add_argument("--start", choices=["fallen", "supine", "prone"], default="fallen",
+    ap.add_argument("--start", choices=["fallen", "supine", "prone", "pushed"],
+                    default="fallen",
                     help="Start state: fallen (random sprawl), supine (flat on "
-                         "back, extended) or prone (face-down, for roll-over eval)")
+                         "back, extended), prone (face-down, for roll-over eval) "
+                         "or pushed (stand + shove, for brace eval)")
     ap.add_argument("--episodes", type=int, default=3)
     ap.add_argument("--seconds", type=float, default=8.0)
     ap.add_argument("--fps", type=int, default=20)

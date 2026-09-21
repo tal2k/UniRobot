@@ -219,6 +219,78 @@ def reset_mixed_starts(
       asset_cfg=asset_cfg)
 
 
+def reset_falling(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  throw_prob: float = 0.5,
+  throw_speed: tuple[float, float] = (1.0, 2.5),
+  throw_spin: float = 1.5,
+  tumble_height: tuple[float, float] = (0.35, 0.85),
+  tumble_speed: float = 1.5,
+  tumble_spin: float = 2.0,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+  """Doomed-fall episode starts for the BRACE stage (independent of get-up).
+
+  ``throw`` fraction: standing pose, knocked with a random planar velocity +
+  spin (a push the balance policy cannot catch). The rest: mid-air tumbles
+  (random height/orientation/velocity, already falling). Both match the
+  deployment ``fall_trigger`` domain (high + tilted/dropping/spinning), so
+  the trained policy starts where the switcher engages it. Joints stay near
+  standing — set them with ``reset_joints_by_offset`` as a chained event.
+  """
+  if env_ids is None:
+    env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+  device = env.device
+  asset = env.scene[asset_cfg.name]
+  default_root_state = asset.data.default_root_state
+  assert default_root_state is not None
+
+  u = torch.rand(len(env_ids), device=device)
+  is_throw = u < throw_prob
+  throw_ids = env_ids[is_throw]
+  tumble_ids = env_ids[~is_throw]
+
+  if len(throw_ids) > 0:
+    n = len(throw_ids)
+    root = default_root_state[throw_ids].clone()
+    root[:, 0:2] += sample_uniform(-0.1, 0.1, (n, 2), device=device)
+    base = root[:, 3:7]
+    rp = sample_uniform(-0.3, 0.3, (n, 2), device=device)
+    yaw = sample_uniform(-math.pi, math.pi, (n,), device=device)
+    quat = quat_mul(base, quat_from_euler_xyz(rp[:, 0], rp[:, 1], yaw))
+    positions = root[:, 0:3] + env.scene.env_origins[throw_ids]
+    heading = sample_uniform(-math.pi, math.pi, (n,), device=device)
+    speed = sample_uniform(throw_speed[0], throw_speed[1], (n,), device=device)
+    lin = torch.stack([speed * torch.cos(heading),
+                       speed * torch.sin(heading),
+                       sample_uniform(-0.2, 0.2, (n,), device=device)], dim=-1)
+    ang = sample_uniform(-throw_spin, throw_spin, (n, 3), device=device)
+    asset.write_root_link_pose_to_sim(
+      torch.cat([positions, quat], dim=-1), env_ids=throw_ids)
+    asset.write_root_link_velocity_to_sim(
+      torch.cat([lin, ang], dim=-1), env_ids=throw_ids)
+
+  if len(tumble_ids) > 0:
+    n = len(tumble_ids)
+    root = default_root_state[tumble_ids].clone()
+    root[:, 0:2] += sample_uniform(-0.2, 0.2, (n, 2), device=device)
+    root[:, 2] = sample_uniform(
+      tumble_height[0], tumble_height[1], (n,), device=device)
+    roll = sample_uniform(-math.pi, math.pi, (n,), device=device)
+    pitch = sample_uniform(-math.pi / 2, math.pi / 2, (n,), device=device)
+    yaw = sample_uniform(-math.pi, math.pi, (n,), device=device)
+    quat = quat_mul(root[:, 3:7], quat_from_euler_xyz(roll, pitch, yaw))
+    positions = root[:, 0:3] + env.scene.env_origins[tumble_ids]
+    lin = sample_uniform(-tumble_speed, tumble_speed, (n, 3), device=device)
+    lin[:, 2] = sample_uniform(-1.0, 0.0, (n,), device=device)
+    ang = sample_uniform(-tumble_spin, tumble_spin, (n, 3), device=device)
+    asset.write_root_link_pose_to_sim(
+      torch.cat([positions, quat], dim=-1), env_ids=tumble_ids)
+    asset.write_root_link_velocity_to_sim(
+      torch.cat([lin, ang], dim=-1), env_ids=tumble_ids)
+
+
 def lift_assist(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor,

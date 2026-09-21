@@ -32,10 +32,12 @@ STAND_POLICY_PATH = os.path.join(MODELS_DIR, "g1_stand_policy.onnx")
 
 # Staged get-up policies (v2): curated exports first (models/), newest
 # training snapshot under logs/rsl_rl/<experiment>/ as fallback — same rule
-# as stand. Kind is "roll" (any fall -> supine) or "getup" (supine -> stand).
+# as stand. Kind is "roll" (any fall -> supine), "getup" (supine -> stand)
+# or "brace" (doomed fall -> safe landing, independent pre-impact stage).
 RECOVERY_POLICY = {
     "roll": ("g1_getup_roll_policy.onnx", "g1_getup_roll"),
     "getup": ("g1_getup_standup_policy.onnx", "g1_getup_standup"),
+    "brace": ("g1_brace_policy.onnx", "g1_getup_brace"),
 }
 
 # Local 29-DoF config: deploy.yaml is the authority, fallback is built in.
@@ -304,9 +306,9 @@ def find_latest_stand_policy():
 def find_latest_recovery_policy(kind: str):
     """Curated recovery policy if present, else newest training snapshot.
 
-    Kind is "roll" (any fall -> supine) or "getup" (supine -> stand).
-    Same lookup rule as `find_latest_stand_policy`; returns None when
-    nothing was trained.
+    Kind is "roll" (any fall -> supine), "getup" (supine -> stand) or
+    "brace" (doomed fall -> safe landing, independent stage). Same lookup
+    rule as `find_latest_stand_policy`; returns None when nothing trained.
     """
     import glob
 

@@ -9,6 +9,7 @@ Commands:
     gui        3D viewer + tkinter control panel
     check      10 s tkinter self-test
     recover    staged get-up v2 (Roll -> GetUp) from a fall
+    brace      independent fall-brace demo from a topple (no get-up chain)
     train      training + dashboard (--task getup|stand, default getup)
     train-stand stand-still balance training + dashboard (shortcut)
     dashboard  friendly live dashboard (:6006)
@@ -65,7 +66,7 @@ def cmd_gui(args: argparse.Namespace) -> int:
     G1Gui(policy=args.policy, scene=args.scene, terrain=args.terrain,
           stand_policy=args.stand_policy, mode=args.mode,
           policy_roll=args.policy_roll, policy_standup=args.policy_standup,
-          seed=args.seed).run()
+          policy_brace=args.policy_brace, seed=args.seed).run()
     return 0
 
 
@@ -77,6 +78,24 @@ def cmd_check(_args: argparse.Namespace) -> int:
     except SystemExit as e:
         return int(e.code or 0)
     return 0
+
+
+def cmd_brace(args: argparse.Namespace) -> int:
+    from core.brace import run_brace
+    from core.bridge import find_latest_recovery_policy
+    from core.terrains import resolve_scene
+
+    brace_policy = (args.policy_brace
+                    or find_latest_recovery_policy("brace"))
+    if brace_policy is None:
+      raise FileNotFoundError(
+        "no brace policy: train it with "
+        "`g1 train -- --task getup --stage brace` or pass --policy-brace")
+    scene = resolve_scene(args.terrain, args.scene)
+    ok = run_brace(brace_policy, scene, args.seconds, args.sim_dt,
+                   args.headless, stand_policy_path=args.stand_policy,
+                   seed=args.seed)
+    return 0 if ok else 1
 
 
 def cmd_recover(args: argparse.Namespace) -> int:
@@ -169,17 +188,36 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_stand)
 
     p = sub.add_parser("gui", help="interactive 3D + control panel")
-    _add_common_stand_args(p, modes=("walk", "stand", "auto", "recover"))
+    _add_common_stand_args(p, modes=("walk", "stand", "auto", "recover",
+                                     "brace"))
     p.add_argument("--policy-roll", default=None,
                    help="Roll-to-supine ONNX for --mode recover")
     p.add_argument("--policy-standup", default=None,
                    help="Supine-to-stand ONNX for --mode recover")
+    p.add_argument("--policy-brace", default=None,
+                   help="Fall-brace ONNX for --mode brace "
+                        "(default: curated, else latest g1_getup_brace snapshot)")
     p.add_argument("--seed", type=int, default=0,
                    help="Fall seed for --mode recover drops")
     p.set_defaults(func=cmd_gui)
 
     p = sub.add_parser("check", help="tkinter env self-test")
     p.set_defaults(func=cmd_check)
+
+    p = sub.add_parser("brace", help="independent fall-brace from a topple")
+    p.add_argument("--scene", default=None, help="MuJoCo scene XML (overrides --terrain)")
+    p.add_argument("--terrain", choices=sorted(TERRAINS), default="flat")
+    p.add_argument("--policy-brace", default=None,
+                   help="Fall-brace ONNX (default: curated, else latest "
+                        "g1_getup_brace snapshot)")
+    p.add_argument("--stand-policy", default=None,
+                   help="Nominal stand policy before the topple (default: "
+                        "models/g1_stand_policy.onnx, else latest snapshot)")
+    p.add_argument("--seconds", type=float, default=8.0)
+    p.add_argument("--sim-dt", type=float, default=0.005)
+    p.add_argument("--headless", action="store_true")
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(func=cmd_brace)
 
     p = sub.add_parser("recover", help="staged get-up from a fall")
     p.add_argument("--scene", default=None, help="MuJoCo scene XML (overrides --terrain)")

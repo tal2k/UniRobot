@@ -13,6 +13,7 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
+from core.brace import BRACING, BraceBridge
 from core.bridge import (
     DEFAULT_LOCAL_POLICY,
     G1StandPolicy,
@@ -33,12 +34,13 @@ CMD_RANGES = {"vx": (-0.5, 1.0), "vy": (-0.5, 0.5), "wz": (-1.0, 1.0)}
 class G1Gui:
     def __init__(self, policy=DEFAULT_LOCAL_POLICY, scene=None, terrain="flat",
                  stand_policy=None, mode="walk", policy_roll=None,
-                 policy_standup=None, seed=0):
+                 policy_standup=None, policy_brace=None, seed=0):
         self.policy_path = policy
         self.stand_policy_path = stand_policy or find_latest_stand_policy()
         self.policy_mode = mode
         self.policy_roll = policy_roll
         self.policy_standup = policy_standup
+        self.policy_brace = policy_brace
         self._seed = seed
         self.viewer = None
         self._load_scene(scene or TERRAINS.get(terrain, TERRAINS["flat"]))
@@ -59,7 +61,19 @@ class G1Gui:
         self.mj_model = mujoco.MjModel.from_xml_path(scene_path)
         self.mj_model.opt.timestep = SIM_DT
         self.mj_data = mujoco.MjData(self.mj_model)
-        if self.policy_mode == "recover" and GetUpBridge is not None:
+        if self.policy_mode == "brace" and BraceBridge is not None:
+            # Independent fall-brace (no get-up chain): stand + shove, the
+            # guard auto-engages the brace policy mid-fall, then holds.
+            path = self.policy_brace or find_latest_recovery_policy("brace")
+            if path is None:
+                raise FileNotFoundError(
+                    "no brace policy: train it with "
+                    "`g1 train -- --task getup --stage brace`")
+            self.bridge = BraceBridge(
+                self.mj_model, self.mj_data, path, sim_dt=SIM_DT,
+                stand_policy_path=self.stand_policy_path)
+            self._topple()
+        elif self.policy_mode == "recover" and GetUpBridge is not None:
             stage_policies = {}
             for kind, given in (("roll", self.policy_roll),
                                 ("getup", self.policy_standup)):
@@ -120,7 +134,11 @@ class G1Gui:
 
         btns = tk.Frame(self.root)
         btns.pack(pady=6)
-        if self.policy_mode == "recover" and GetUpBridge is not None and \
+        if self.policy_mode == "brace" and BraceBridge is not None and \
+                isinstance(self.bridge, BraceBridge):
+            tk.Button(btns, text="Topple", width=9,
+                      command=self._topple).pack(side="left", padx=2)
+        elif self.policy_mode == "recover" and GetUpBridge is not None and \
                 isinstance(self.bridge, GetUpBridge):
             for text, cmd in (("Roll", ROLL), ("GetUp", GETUP), ("Auto", None)):
                 tk.Button(btns, text=text, width=9,
@@ -165,6 +183,8 @@ class G1Gui:
         self.status.pack(fill="x", padx=8, pady=4)
         if self.policy_mode == "recover":
             hint = "Roll/GetUp force a stage, Auto resumes the switcher, Drop = new fall"
+        elif self.policy_mode == "brace":
+            hint = "Topple = stand + shove (guard auto-braces, then holds; sliders inactive)"
         else:
             hint = "Keys: arrows = move, A/D = turn, Space = stand"
         tk.Label(self.root, text=hint, fg="gray").pack(pady=(0, 6))
@@ -196,11 +216,24 @@ class G1Gui:
         self._push_cmd()
 
     def _reset(self):
+        if BraceBridge is not None and isinstance(self.bridge, BraceBridge):
+            # Calm re-stand + re-arm (no shove); Topple demos the brace.
+            reset_standing(self.mj_model, self.mj_data,
+                           self.bridge.default_pos, height=0.78)
+            self.bridge.guard.reset()
+            self.fell = False
+            return
         if GetUpBridge is not None and isinstance(self.bridge, GetUpBridge):
             self._drop()
             return
         reset_standing(self.mj_model, self.mj_data, self.bridge.default_pos, height=0.78)
         self.bridge.phase = 0.0
+        self.fell = False
+
+    def _topple(self):
+        """Brace mode: stand + shove (seeded) + re-arm the guard."""
+        self._seed += 1
+        self.bridge.topple(seed=self._seed)
         self.fell = False
 
     def _drop(self):
@@ -240,9 +273,13 @@ class G1Gui:
         self.viewer.sync()
 
         h, tilt, cmd, stand_state = self.bridge.telemetry()
+        is_brace = BraceBridge is not None and isinstance(self.bridge, BraceBridge)
         is_getup = GetUpBridge is not None and isinstance(self.bridge, GetUpBridge)
         extra = ""
-        if is_getup:
+        if is_brace:
+            state = f"BRACE [{stand_state.upper()}]"
+            self.fell = stand_state == BRACING
+        elif is_getup:
             try:
                 _, _, _, facing, _ = self.bridge._metrics()
                 extra = f" facing={facing:+.2f}"

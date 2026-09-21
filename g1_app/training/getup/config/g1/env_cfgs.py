@@ -3,6 +3,8 @@
 v2 pipeline (see g1_app/docs/getup_staged_policies.md §14):
   Unitree-G1-Getup-Roll      Roll: any fall -> supine (roll_env_cfg)
   Unitree-G1-Getup-StandUp   StandUp: lying family -> stand, merged (standup_env_cfg)
+  Unitree-G1-Getup-Brace     Brace: doomed fall -> safe landing (brace_env_cfg,
+                             independent pre-impact stage, never chained)
 """
 
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -12,6 +14,7 @@ from src.assets.robots import (
   get_g1_robot_cfg,
 )
 
+from training.getup.brace_env_cfg import make_brace_env_cfg
 from training.getup.roll_env_cfg import make_roll_env_cfg
 from training.getup.standup_env_cfg import make_standup_env_cfg
 
@@ -49,3 +52,8 @@ def unitree_g1_getup_roll_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 def unitree_g1_getup_standup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create Unitree G1 StandUp (v2 merged get-up) configuration."""
   return _finalize_g1_cfg(make_standup_env_cfg(), play)
+
+
+def unitree_g1_getup_brace_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create Unitree G1 Brace (independent pre-impact) configuration."""
+  return _finalize_g1_cfg(make_brace_env_cfg(), play)

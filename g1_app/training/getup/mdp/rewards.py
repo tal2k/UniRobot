@@ -113,6 +113,50 @@ def _contact_force(sensor) -> torch.Tensor:
   return torch.norm(f, dim=-1).sum(dim=-1)
 
 
+def impact_force(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  max_force: float,
+) -> torch.Tensor:
+  """Normalized per-step impact force on one body group (BRACE damage term).
+
+  Clipped force / max_force in [0, 1]. The brace env penalizes the SAME
+  quantity with different weights per group (torso high, arms cheap), so
+  the policy discovers protective contact placement itself instead of
+  tracking a human-prescribed "arms out" pose (which reward-hacks into
+  stiff straight arms — Shi et al. 2025). Never reward a pose; price the
+  damage.
+  """
+  f = _contact_force(env.scene[sensor_name])
+  return torch.clamp(f / max_force, 0.0, 1.0)
+
+
+def _root_planar_speed(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """|root xy velocity| per env (settled-vs-sliding signal)."""
+  return torch.norm(_robot(env).data.root_link_vel_w[:, :2], dim=1)
+
+
+def brace_success(
+  env: ManagerBasedRlEnv,
+  max_height: float,
+  max_speed: float,
+  min_height: float,
+  max_tilt: float,
+) -> torch.Tensor:
+  """Sparse gate: the fall ended safely (BRACE money metric, max = weight).
+
+  1 when the body settled on the ground (low + slow) OR stumbled back to a
+  standing hold (tall + upright + slow). Either is a damage-free end to a
+  doomed fall; impact-force penalties decide which landings are cheap.
+  """
+  h = _robot(env).data.root_link_pos_w[:, 2]
+  tilt = torch.norm(_robot(env).data.projected_gravity_b[:, :2], dim=1)
+  speed = _root_planar_speed(env)
+  landed = (h < max_height) & (speed < max_speed)
+  recovered = (h > min_height) & (tilt < max_tilt) & (speed < max_speed)
+  return (landed | recovered).float()
+
+
 def feet_force(
   env: ManagerBasedRlEnv,
   left_sensor: str,
