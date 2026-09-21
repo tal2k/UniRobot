@@ -16,14 +16,12 @@ try:  # package-relative (pip install / python -m g1_app.cli)
     from .config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, MODELS_DIR, WORKSPACE, get_local_cfg
     from .getup_stages import (
         DONE,
+        GETUP,
         IDLE,
+        ROLL,
         STAGE_SEQUENCE,
         SUPINE_TARGET,
-        A,
-        C,
         StageSwitcher,
-        gate_joint_indices,
-        mean_abs_deviation,
         rms_pose_error,
     )
     from .math import euler_to_quat, quat_to_projected_gravity
@@ -32,14 +30,12 @@ except ImportError:  # legacy flat sys.path (APP_DIR on sys.path)
     from core.config import DEFAULT_LOCAL_POLICY, G1_MODEL_DIR, MODELS_DIR, WORKSPACE, get_local_cfg
     from core.getup_stages import (
         DONE,
+        GETUP,
         IDLE,
+        ROLL,
         STAGE_SEQUENCE,
         SUPINE_TARGET,
-        A,
-        C,
         StageSwitcher,
-        gate_joint_indices,
-        mean_abs_deviation,
         rms_pose_error,
     )
     from core.math import euler_to_quat, quat_to_projected_gravity
@@ -51,9 +47,13 @@ DEFAULT_SCENE = os.path.join(G1_MODEL_DIR, "scene_29dof.xml")
 # walking policy (LFS-tracked). Training snapshots stay under logs/.
 STAND_POLICY_PATH = os.path.join(MODELS_DIR, "g1_stand_policy.onnx")
 
-# Staged get-up policies: curated exports first (models/), newest training
-# snapshot under logs/rsl_rl/<experiment>/ as fallback — same rule as stand.
-STAGE_POLICY_SUFFIX = {"A": "reposition", "B": "situp", "C": "rise"}
+# Staged get-up policies (v2): curated exports first (models/), newest
+# training snapshot under logs/rsl_rl/<experiment>/ as fallback — same rule
+# as stand. Kind is "roll" (any fall -> supine) or "getup" (supine -> stand).
+RECOVERY_POLICY = {
+    "roll": ("g1_getup_roll_policy.onnx", "g1_getup_roll"),
+    "getup": ("g1_getup_standup_policy.onnx", "g1_getup_standup"),
+}
 
 # Local 29-DoF config: deploy.yaml is the authority, fallback is built in.
 LOCAL_CFG = get_local_cfg()
@@ -318,20 +318,21 @@ def find_latest_stand_policy():
     return cands[-1] if cands else None
 
 
-def find_latest_stage_policy(stage: str):
-    """Curated stage policy if present, else newest training snapshot.
+def find_latest_recovery_policy(kind: str):
+    """Curated recovery policy if present, else newest training snapshot.
 
-    Stage is "A" (reposition), "B" (situp) or "C" (rise). Same lookup rule
-    as `find_latest_stand_policy`; returns None when nothing was trained.
+    Kind is "roll" (any fall -> supine) or "getup" (supine -> stand).
+    Same lookup rule as `find_latest_stand_policy`; returns None when
+    nothing was trained.
     """
     import glob
 
-    suffix = STAGE_POLICY_SUFFIX[stage]
-    curated = os.path.join(MODELS_DIR, f"g1_getup_{suffix}_policy.onnx")
+    curated_name, experiment = RECOVERY_POLICY[kind]
+    curated = os.path.join(MODELS_DIR, curated_name)
     if os.path.isfile(curated):
         return curated
     cands = sorted(glob.glob(os.path.join(
-        WORKSPACE, "unitree_rl_mjlab", "logs", "rsl_rl", f"g1_getup_{suffix}", "*",
+        WORKSPACE, "unitree_rl_mjlab", "logs", "rsl_rl", experiment, "*",
         "policy.onnx")), key=os.path.getmtime)
     return cands[-1] if cands else None
 
@@ -587,24 +588,27 @@ class WalkStandBridge:
 
 
 class GetUpBridge:
-    """Staged get-up: Reposition -> SitUp -> Rise with cross-faded switching.
+    """Staged get-up v2: ROLL (any fall -> supine) -> GETUP (supine -> stand).
 
-    Holds one 94-dim policy per stage (same obs/action contract as
+    Holds one 94-dim policy per phase (same obs/action contract as
     StandStillPolicy) plus an optional balance policy for the standing
     handoff. `core.getup_stages.StageSwitcher` decides transitions from
-    height/tilt/speed/limb-extension with hysteresis and per-stage timeouts;
-    every switch cross-fades joint targets over blend_s (same rule as
-    WalkStandBridge). PD runs every sim step, inference every 4th (50 Hz).
+    height/tilt/speed/facing/supine-pose-error with hysteresis and per-stage
+    timeouts; every switch cross-fades joint targets over blend_s (same rule
+    as WalkStandBridge). PD runs every sim step, inference every 4th (50 Hz).
 
-    Velocity commands are ignored in v1: recovery is a zero-command mode.
-    `telemetry()` reports (height, tilt, user_command, state) with state in
-    {idle, A, B, C, done} for CLI/GUI status lines.
+    Facing (body-x projected gravity, yaw-invariant) tells face-up (~-1)
+    from face-down (~+1) from the IMU alone, so prone/side falls roll first
+    and already-supine falls skip straight to GETUP. Velocity commands are
+    ignored in v2: recovery is a zero-command mode. `telemetry()` reports
+    (height, tilt, user_command, state) with state in {idle, roll, getup,
+    done} for CLI/GUI status lines.
     """
 
     def __init__(self, mj_model, mj_data, stage_policies, sim_dt=0.005,
                  blend_s=0.4, stand_policy_path=None):
         missing = [s for s in STAGE_SEQUENCE if s not in stage_policies]
-        assert not missing, f"missing stage policies: {missing}"
+        assert not missing, f"missing recovery policies: {missing}"
         self.mj_model = mj_model
         self.mj_data = mj_data
         self.stage_policies = {
@@ -615,11 +619,9 @@ class GetUpBridge:
         if stand_policy_path is not None:
             self.stand = StandStillPolicy(mj_model, mj_data, stand_policy_path,
                                           sim_dt=sim_dt)
-        ref = self.stage_policies[A]
+        ref = self.stage_policies[ROLL]
         self.switcher = StageSwitcher(dt=ref.STEP_DT)
         self.active = IDLE
-        self._gate_idx = gate_joint_indices(ref.joint_names)
-        self._gate_q0 = ref.default_pos
         self.blend_s = blend_s
         self._blend = 1.0
         self._prev_target = ref.default_pos.copy()
@@ -633,9 +635,9 @@ class GetUpBridge:
 
     def _active_policy(self):
         if self.active == IDLE:
-            return self.stand if self.stand is not None else self.stage_policies[A]
+            return self.stand if self.stand is not None else self.stage_policies[ROLL]
         if self.active == DONE:
-            return self.stand if self.stand is not None else self.stage_policies[C]
+            return self.stand if self.stand is not None else self.stage_policies[GETUP]
         return self.stage_policies[self.active]
 
     @property
@@ -655,37 +657,39 @@ class GetUpBridge:
             self.stand.set_command(vx, vy, wz)
 
     def _base_state(self):
-        return self.stage_policies[A]._base_state()
+        return self.stage_policies[ROLL]._base_state()
 
-    def _height_tilt(self):
+    def _height_tilt_facing(self):
         h = float(self.mj_data.qpos[2])
         _, grav, _, _ = self._base_state()
-        return h, float(np.linalg.norm(grav[:2]))
+        tilt = float(np.linalg.norm(grav[:2]))
+        # Facing: body-x projected gravity (yaw-invariant). Supine ~-1
+        # (down toward the back), prone ~+1 (down into the chest), side ~0.
+        return h, tilt, float(grav[0])
 
     def _metrics(self):
-        """(height, tilt, root speed, limb extension, supine pose error)."""
-        h, tilt = self._height_tilt()
+        """(height, tilt, root speed, facing, supine pose error)."""
+        h, tilt, facing = self._height_tilt_facing()
         speed = float(np.linalg.norm(self.mj_data.qvel[0:2]))
-        ref = self.stage_policies[A]
+        ref = self.stage_policies[ROLL]
         q = np.array(self.mj_data.qpos[7:][ref.muj_q], dtype=np.float32)
-        extension = mean_abs_deviation(q, self._gate_q0, self._gate_idx)
         # q is in policy joint order; SUPINE_TARGET is all zeros, so the RMS
-        # is order-independent and exactly the training `supine_success` pose
-        # error the A gate mirrors.
+        # is order-independent. Keeps the ROLL handoff inside GETUP's start
+        # distribution (joints near supine).
         pose_err = rms_pose_error(q, SUPINE_TARGET)
-        return h, tilt, speed, extension, pose_err
+        return h, tilt, speed, facing, pose_err
 
     def step_sim(self):
         policy = self._active_policy()
         if self._sim_steps % policy.decimation == 0:
-            h, tilt, speed, extension, pose_err = self._metrics()
-            wanted = self.switcher.update(h, tilt, speed, extension, pose_err)
+            h, tilt, speed, facing, pose_err = self._metrics()
+            wanted = self.switcher.update(h, tilt, speed, facing, pose_err)
             if wanted != self.active:
                 self._prev_target = self._blended_target().copy()
                 self.active = wanted
                 self._blend = 0.0
                 print(f"getup stage -> {wanted} (h={h:.2f} tilt={tilt:.2f} "
-                       f"speed={speed:.2f} ext={extension:.2f} "
+                       f"speed={speed:.2f} facing={facing:+.2f} "
                        f"pose_err={pose_err:.2f})")
                 policy = self._active_policy()
             # Idle without a balance policy: hold the nominal pose.
@@ -712,7 +716,7 @@ class GetUpBridge:
         self._active_policy().apply_pd()
 
     def telemetry(self):
-        h, tilt = self._height_tilt()
+        h, tilt, _ = self._height_tilt_facing()
         return h, tilt, self.user_command, self.active
 
 
@@ -822,8 +826,8 @@ def run_recover(stage_policies=None, scene=DEFAULT_SCENE, seconds=15.0,
                 stand_policy_path=None, start="fallen", seed=0):
     """Staged get-up rollout (viewer or headless) from a fallen start.
 
-    stage_policies maps "A"/"B"/"C" to ONNX paths; None resolves each with
-    `find_latest_stage_policy`. Hands off to the balance policy at DONE when
+    stage_policies maps "roll"/"getup" to ONNX paths; None resolves each with
+    `find_latest_recovery_policy`. Hands off to the balance policy at DONE when
     one is available. Returns True when the robot ends standing.
     """
     mj_model = mujoco.MjModel.from_xml_path(scene)
@@ -833,11 +837,13 @@ def run_recover(stage_policies=None, scene=DEFAULT_SCENE, seconds=15.0,
     if stage_policies is None:
         stage_policies = {}
         for s in STAGE_SEQUENCE:
-            path = find_latest_stage_policy(s)
+            path = find_latest_recovery_policy(s)
             if path is None:
+                train_stage = "roll" if s == ROLL else "standup"
                 raise FileNotFoundError(
-                    f"no stage-{s} policy: train it with "
-                    f"`g1 train -- --task getup --stage {s}` or pass --policy-{s.lower()}")
+                    f"no {s} policy: train it with "
+                    f"`g1 train -- --task getup --stage {train_stage}` or pass "
+                    f"--policy-{s}")
             stage_policies[s] = path
     if stand_policy_path is None:
         stand_policy_path = find_latest_stand_policy()
@@ -846,7 +852,7 @@ def run_recover(stage_policies=None, scene=DEFAULT_SCENE, seconds=15.0,
                          stand_policy_path=stand_policy_path)
     if start == "fallen":
         reset_fallen(mj_model, mj_data, bridge.default_pos,
-                     muj_q=bridge.stage_policies[A].muj_q, seed=seed)
+                     muj_q=bridge.stage_policies[ROLL].muj_q, seed=seed)
     else:
         reset_standing(mj_model, mj_data, bridge.default_pos)
 

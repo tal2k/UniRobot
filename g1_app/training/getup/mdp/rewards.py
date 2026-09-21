@@ -19,6 +19,21 @@ def _robot(env: ManagerBasedRlEnv) -> Entity:
   return asset
 
 
+def _default_joint_pos(asset: Entity, like: torch.Tensor) -> torch.Tensor:
+  """default_joint_pos as (num_envs, num_joints) rows.
+
+  MJLab stores per-env defaults; flattening (as this file once did) mixes
+  envs and silently broadcasts env 0's pose to all envs.
+  """
+  q0 = torch.as_tensor(asset.data.default_joint_pos,
+                       device=like.device, dtype=like.dtype)
+  if q0.dim() == 1:
+    q0 = q0.unsqueeze(0)
+  if q0.shape[0] == 1:
+    q0 = q0.expand(like.shape[0], -1)
+  return q0
+
+
 def stand_height(
   env: ManagerBasedRlEnv,
   target_height: float,
@@ -48,8 +63,7 @@ def stand_pose(
   asset = _robot(env)
   ids = asset_cfg.joint_ids
   q = asset.data.joint_pos if ids is None else asset.data.joint_pos[:, ids]
-  q0 = torch.as_tensor(asset.data.default_joint_pos, device=q.device, dtype=q.dtype)
-  q0 = q0.flatten().unsqueeze(0)  # [1, num_joints], broadcasts over envs
+  q0 = _default_joint_pos(asset, q)
   q0 = q0 if ids is None else q0[:, ids]
   mse = torch.mean(torch.square(q - q0), dim=1)
   return torch.exp(-mse / std**2)
@@ -221,6 +235,57 @@ def supine_success(
   q_target = q_target if ids is None else q_target[:, ids]
   pose_err = torch.sqrt(torch.mean(torch.square(q - q_target), dim=1))
   return ((h < max_height) & (tilt > min_tilt) & (pose_err < max_pose_err)).float()
+
+
+def face_up_gravity(
+  env: ManagerBasedRlEnv,
+  std: float,
+  target: tuple[float, float, float] = (-1.0, 0.0, 0.0),
+) -> torch.Tensor:
+  """Reward the torso facing up (roll-over shaping, HumanUP-style).
+
+  Exp kernel on the distance between the projected gravity and the flat
+  supine vector. Exact-flat-supine after pitching back reads (-1, 0, 0)
+  (down toward the back); prone reads (+1, 0, 0); side reads (0, ±1, 0).
+  Yaw never moves the gravity vector, so one target covers all headings.
+  """
+  g = _robot(env).data.projected_gravity_b
+  t = torch.as_tensor(target, device=g.device, dtype=g.dtype).unsqueeze(0)
+  return torch.exp(-torch.sum(torch.square(g - t), dim=1) / std**2)
+
+
+def roll_success(
+  env: ManagerBasedRlEnv,
+  max_height: float,
+  max_facing: float,
+) -> torch.Tensor:
+  """Sparse gate: low and face-up (the ROLL handoff condition).
+
+  1 only when the root is below ``max_height`` and the body-x projected
+  gravity is below ``max_facing`` (face-up). Tilt is implied: |facing| > 0.5
+  means the torso is horizontal.
+  """
+  h = _robot(env).data.root_link_pos_w[:, 2]
+  facing = _robot(env).data.projected_gravity_b[:, 0]
+  return ((h < max_height) & (facing < max_facing)).float()
+
+
+def wrist_pose_l2(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=(".*wrist.*",)),
+) -> torch.Tensor:
+  """Mean-square wrist deviation from nominal (wrists stay out of the way).
+
+  Wrists add 6 action dims but contribute nothing to standing up (HumanUP
+  drops them entirely); penalizing their motion shrinks the effective
+  exploration space without changing the 29-dim contract.
+  """
+  asset = _robot(env)
+  ids = asset_cfg.joint_ids
+  q = asset.data.joint_pos if ids is None else asset.data.joint_pos[:, ids]
+  q0 = _default_joint_pos(asset, q)
+  q0 = q0 if ids is None else q0[:, ids]
+  return torch.mean(torch.square(q - q0), dim=1)
 
 
 def com_vel_z(

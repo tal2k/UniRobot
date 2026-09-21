@@ -91,7 +91,7 @@ events; the friendly dashboard auto-starts on :6006. On Colab, open
 - [x] Get-up training pipeline with dashboard and video replay
 - [x] Indoor apartment world for assistive scenarios
 - [x] Shove-aware stand training (push curriculum in `training/stand/`)
-- [ ] Staged get-up policies (pipeline + `g1 recover` done; stage A/B/C training runs next)
+- [ ] Staged get-up v2 (pipeline + `g1 recover` done; Roll + StandUp training runs next)
 - [ ] Everyday apartment tasks: doorway passing, cluttered-floor robustness, gentle contact
 - [ ] Sim-to-real via the SDK2 bindings when the policies earn it
 

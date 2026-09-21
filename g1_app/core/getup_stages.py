@@ -1,22 +1,27 @@
-"""Stage gates + switching state machine for the staged get-up.
+"""Stage gates + switching state machine for the staged get-up (v2).
 
 Pure-stdlib logic shared by training (re-exported by
 `training/getup/curriculum.py`) and deployment
 (`core/bridge.py::GetUpBridge`). It lives under `core/` so the runtime sim
 never has to import the training package.
 
+v2 design (HumanUP-style split by start family, supine as the funnel):
+ROLL (any fall -> supine) -> GETUP (supine -> stand) -> DONE (stand handoff).
+One recovery switch instead of three; the merged GetUp policy covers the old
+SitUp+Rise phases in a single run with height-banded rewards.
+
 Stage metrics, sampled once per policy tick (50 Hz):
 
-* ``height``    -- root (pelvis) height: ~0.10 lying, ~0.78 standing
-* ``tilt``      -- |projected gravity xy|: 0 upright, ~1 torso horizontal
-* ``speed``     -- |root xy velocity| [m/s]
-* ``extension`` -- mean |q - q0| over shoulder/elbow/knee joints (limbs clear)
-* ``pose_err``  -- RMS joint error to the supine neutral target (Stage A gate)
-
-Sequence: Reposition (A) -> SitUp (B) -> Rise (C) -> DONE (stand handoff).
-The A advance gate mirrors the training reward exactly
-(``supine_success``: height < 0.35, tilt > 0.55, pose_err < 0.25) so a
-policy that earns the reward also triggers the deployment switch.
+* ``height``   -- root (pelvis) height: ~0.10 lying, ~0.78 standing
+* ``tilt``     -- |projected gravity xy|: 0 upright, ~1 torso horizontal
+* ``speed``    -- |root xy velocity| [m/s]
+* ``facing``   -- body-x projected gravity: supine ~-1, prone ~+1, side ~0.
+  Yaw-invariant (yaw rotations never move the gravity vector), so this
+  distinguishes face-up from face-down from the IMU alone. Assumes the
+  G1 x-forward torso convention — verify the sign in sim (print gravity
+  while supine vs prone) if the model ever changes.
+* ``pose_err`` -- RMS joint error to the supine neutral target (keeps the
+  ROLL handoff inside the GETUP policy's start distribution).
 """
 
 from __future__ import annotations
@@ -25,35 +30,42 @@ import math
 from dataclasses import dataclass
 
 __all__ = [
-  "A", "A_GATE_JOINT_PATTERNS", "B", "C", "DONE", "FALLEN_HEIGHT",
-  "FALLEN_TILT", "IDLE", "MIN_TICKS", "REVERT_GATES", "STAGE_GATES",
-  "STAGE_SEQUENCE", "STAGE_TIMEOUTS", "SUPINE_TARGET", "StageGate",
-  "StageSwitcher", "gate_joint_indices", "is_fallen", "mean_abs_deviation",
-  "rms_pose_error",
+  "DONE", "FACE_UP_GRAVITY", "FALLEN_HEIGHT", "GETUP", "GETUP_GATE",
+  "IDLE", "MIN_TICKS", "REVERT_GATES", "ROLL", "ROLL_GATE",
+  "ROLL_TIMEOUT", "GETUP_TIMEOUT", "STAGE_GATES", "STAGE_SEQUENCE",
+  "STAGE_TIMEOUTS", "SUPINE_FACING", "SUPINE_TARGET", "StageGate",
+  "StageSwitcher", "rms_pose_error",
 ]
 
 IDLE = "idle"
-A = "A"  # Reposition: sprawled -> canonical lying, limbs clear
-B = "B"  # SitUp: lying -> crouch
-C = "C"  # Rise: crouch -> standing
+ROLL = "roll"    # any fall -> canonical supine (funnel stage)
+GETUP = "getup"  # supine -> crouch -> standing (merged SitUp+Rise)
 DONE = "done"
 
-STAGE_SEQUENCE = (A, B, C)
-_NEXT = {A: B, B: C, C: DONE}
+STAGE_SEQUENCE = (ROLL, GETUP)
+_NEXT = {ROLL: GETUP, GETUP: DONE}
 
-# Engagement: below this height or above this tilt the robot is not standing
-# (a crouched robot at h=0.5 still counts as fallen and gets recovered).
+# Engagement: below this height the robot is truly down (a tall-but-tilted
+# robot stays with the balance policy, not recovery).
 FALLEN_HEIGHT = 0.55
-FALLEN_TILT = 0.60
+
+# Facing thresholds (body-x projected gravity).
+SUPINE_FACING = -0.5  # below: confidently face-up -> GETUP can take over
+REVERT_FACING = 0.0   # above, sustained: lost supine -> re-roll
+
+# Face-up gravity target (exact flat supine after pitching back).
+FACE_UP_GRAVITY = (-1.0, 0.0, 0.0)
 
 # Consecutive satisfied policy ticks before a switch (0.2 s at 50 Hz).
 MIN_TICKS = 10
 
-# Limbs-clear gate: joints averaged for the mean |q - q0| extension metric.
-A_GATE_JOINT_PATTERNS = ("shoulder", "elbow", "knee")
+# Per-stage budget [s]; on timeout the sequence re-rolls (ROLL handles any
+# pose, so there is no dead-end restart state).
+ROLL_TIMEOUT = 8.0
+GETUP_TIMEOUT = 12.0
 
-# Supine neutral target (Stage A goal): lying flat on back, legs extended,
-# arms at sides. Canonical home of the constant — training
+# Supine neutral target (ROLL goal / GETUP start): lying flat on back, legs
+# extended, arms at sides. Canonical home of the constant — training
 # (`training/getup/mdp/events.py`, stage cfgs) and the recorder import it
 # from here so the deployment gate and the training reward can never drift
 # apart. All zeros, hence independent of joint order.
@@ -70,59 +82,46 @@ class StageGate:
   min_tilt: float | None = None
   max_tilt: float | None = None
   max_speed: float | None = None
-  min_extension: float | None = None
+  max_facing: float | None = None
+  min_facing: float | None = None
   max_pose_err: float | None = None
 
   def satisfied(self, height: float, tilt: float, speed: float = 0.0,
-                extension: float = 0.0, pose_err: float = 0.0) -> bool:
+                facing: float = 0.0, pose_err: float = 0.0) -> bool:
     return (
       (self.min_height is None or height > self.min_height)
       and (self.max_height is None or height < self.max_height)
       and (self.min_tilt is None or tilt > self.min_tilt)
       and (self.max_tilt is None or tilt < self.max_tilt)
       and (self.max_speed is None or speed < self.max_speed)
-      and (self.min_extension is None or extension > self.min_extension)
+      and (self.max_facing is None or facing < self.max_facing)
+      and (self.min_facing is None or facing > self.min_facing)
       and (self.max_pose_err is None or pose_err < self.max_pose_err)
     )
 
 
-# Advance gates. A ends in the canonical supine pose the SitUp stage starts
-# from — the gate mirrors the training `supine_success` reward exactly
-# (max_height 0.35, min_tilt 0.55, max_pose_err 0.25). B ends crouched, C
-# ends standing and slow enough for the balance handoff.
-STAGE_GATES = {
-  A: StageGate(max_height=0.35, min_tilt=0.55, max_pose_err=0.25),
-  B: StageGate(min_height=0.55, max_tilt=0.70),
-  C: StageGate(min_height=0.72, max_tilt=0.30, max_speed=0.12),
-}
+# ROLL ends in canonical supine: face-up, low, slow, joints near the target
+# the GETUP policy trains from (pose_err keeps the handoff inside GETUP's
+# start distribution). GETUP ends standing and slow (balance handoff).
+ROLL_GATE = StageGate(max_height=0.35, max_speed=0.15,
+                      max_facing=SUPINE_FACING, max_pose_err=0.30)
+GETUP_GATE = StageGate(min_height=0.72, max_tilt=0.30, max_speed=0.12)
 
-# Regressions that send the sequence back one stage (held MIN_TICKS ticks).
-# Only C -> B: a rise that sinks back below the crouch is re-attempted.
-# A/B have no revert gates because their own start states satisfy them.
+STAGE_GATES = {ROLL: ROLL_GATE, GETUP: GETUP_GATE}
+
+# Regressions that send GETUP back to ROLL (held MIN_TICKS ticks): rolled
+# back to prone/side mid-rise. ROLL has no revert — any pose is its domain.
 REVERT_GATES = {
-  C: (B, StageGate(max_height=0.45)),
+  GETUP: (ROLL, StageGate(min_facing=REVERT_FACING)),
 }
 
-# Per-stage budget [s]; on timeout the sequence restarts at Reposition.
-STAGE_TIMEOUTS = {A: 8.0, B: 6.0, C: 5.0}
-
-
-def is_fallen(height: float, tilt: float) -> bool:
-  """Engagement condition: not standing and not merely crouched."""
-  return height < FALLEN_HEIGHT or tilt > FALLEN_TILT
-
-
-def mean_abs_deviation(q, q0, indices) -> float:
-  """Mean |q - q0| over ``indices`` (pure Python; ~12 joints at 50 Hz)."""
-  if not indices:
-    return 0.0
-  return sum(abs(float(q[i]) - float(q0[i])) for i in indices) / len(indices)
+STAGE_TIMEOUTS = {ROLL: ROLL_TIMEOUT, GETUP: GETUP_TIMEOUT}
 
 
 def rms_pose_error(q, q0) -> float:
   """RMS joint error to a target pose (matches the training reward).
 
-  Same quantity ``supine_success`` thresholds at ``max_pose_err``: with the
+  Same quantity the ROLL gate thresholds at ``max_pose_err``: with the
   all-zero ``SUPINE_TARGET`` this is simply the RMS joint angle.
   """
   n = len(q0)
@@ -131,22 +130,15 @@ def rms_pose_error(q, q0) -> float:
   return math.sqrt(sum((float(q[i]) - float(q0[i])) ** 2 for i in range(n)) / n)
 
 
-def gate_joint_indices(joint_names) -> list[int]:
-  """Indices of shoulder/elbow/knee joints in the policy joint order."""
-  return [i for i, n in enumerate(joint_names)
-          if any(p in n for p in A_GATE_JOINT_PATTERNS)]
-
-
 class StageSwitcher:
-  """Hysteretic, timeout-guarded stage sequencer.
+  """Hysteretic, timeout-guarded stage sequencer (v2: ROLL -> GETUP -> DONE).
 
   ``update`` is called once per policy tick with the current metrics and
-  returns the stage the bridge should run. It engages Reposition when the
-  robot is fallen, advances after ``min_ticks`` consecutive gate hits,
-  reverts C -> B when the crouch is lost, restarts the sequence at
-  Reposition when a stage budget runs out, and jumps straight to DONE when
-  the robot already satisfies the Rise handoff gate while in A/B (standing
-  shortcut — the lying A gate could never fire then).
+  returns the stage the bridge should run. Truly-down robots engage ROLL,
+  unless already supine (skips straight to GETUP); stages advance after
+  ``min_ticks`` consecutive gate hits; GETUP reverts to ROLL when supine is
+  lost; budgets re-roll instead of dead-ending; and an already-standing
+  robot jumps straight to DONE (the lying gates could never fire).
   """
 
   def __init__(self, gates=None, revert_gates=None, timeouts=None,
@@ -162,11 +154,16 @@ class StageSwitcher:
     self._elapsed = 0.0
 
   def reset(self) -> None:
-    """Re-arm: the next update engages Reposition if the robot is fallen."""
+    """Re-arm: the next update engages ROLL/GETUP if the robot is down."""
     self.state = IDLE
     self._hold = 0
     self._revert_hold = 0
     self._elapsed = 0.0
+
+  def force(self, state: str) -> None:
+    """Manually enter a stage (GUI override); AUTO resumes via reset()."""
+    assert state in (IDLE, ROLL, GETUP, DONE), f"unknown stage {state!r}"
+    self._enter(state)
 
   @property
   def elapsed(self) -> float:
@@ -180,34 +177,32 @@ class StageSwitcher:
     self._elapsed = 0.0
 
   def update(self, height: float, tilt: float, speed: float = 0.0,
-             extension: float = 0.0, pose_err: float = 0.0) -> str:
+             facing: float = 0.0, pose_err: float = 0.0) -> str:
     if self.state in (IDLE, DONE):
-      if is_fallen(height, tilt):
-        self._enter(A)
+      if height < FALLEN_HEIGHT:
+        # Already supine? Skip the roll, go straight to get-up.
+        self._enter(GETUP if facing < SUPINE_FACING else ROLL)
       return self.state
 
     self._elapsed += self.dt
     if self._elapsed >= self.timeouts.get(self.state, math.inf):
-      self._enter(A)  # budget exhausted: restart the sequence
+      self._enter(ROLL)  # budget exhausted: re-roll (handles any pose)
       return self.state
 
-    if self.state in (A, B):
-      # Standing shortcut: the robot already satisfies the Rise handoff gate
-      # (tall, upright, slow) — e.g. it stood up during Reposition, or a
-      # timeout restarted a standing robot at A. Without this the switcher
-      # deadlocks: the A gate (lying) can never fire while standing, so the
-      # timeout would loop in A forever driving a standing robot with the
-      # lying-stage policy.
-      handoff = self.gates.get(C)
+    if self.state in STAGE_SEQUENCE:
+      # Standing shortcut: already in the handoff state while recovering
+      # (e.g. stood up during ROLL) — jump to DONE, the lying gates could
+      # never fire while standing.
+      handoff = self.gates.get(GETUP)
       if (handoff is not None
-              and handoff.satisfied(height, tilt, speed, extension, pose_err)):
+              and handoff.satisfied(height, tilt, speed, facing, pose_err)):
         self._enter(DONE)
         return self.state
 
     revert = self.revert_gates.get(self.state)
     if revert is not None:
       prev, gate = revert
-      if gate.satisfied(height, tilt, speed, extension, pose_err):
+      if gate.satisfied(height, tilt, speed, facing, pose_err):
         self._revert_hold += 1
         if self._revert_hold >= self.min_ticks:
           self._enter(prev)
@@ -216,7 +211,7 @@ class StageSwitcher:
         self._revert_hold = 0
 
     gate = self.gates.get(self.state)
-    if gate is not None and gate.satisfied(height, tilt, speed, extension, pose_err):
+    if gate is not None and gate.satisfied(height, tilt, speed, facing, pose_err):
       self._hold += 1
       if self._hold >= self.min_ticks:
         self._enter(_NEXT[self.state])

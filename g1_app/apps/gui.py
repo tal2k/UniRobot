@@ -18,10 +18,14 @@ try:
     from g1_app.core.bridge import (
         DEFAULT_LOCAL_POLICY,
         G1StandPolicy,
+        GetUpBridge,
         WalkStandBridge,
+        find_latest_recovery_policy,
         find_latest_stand_policy,
+        reset_fallen,
         reset_standing,
     )
+    from g1_app.core.getup_stages import GETUP, ROLL
     from g1_app.core.terrains import TERRAINS
 except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,18 +33,31 @@ except ImportError:
         from core.bridge import (
             DEFAULT_LOCAL_POLICY,
             G1StandPolicy,
+            GetUpBridge,
             WalkStandBridge,
+            find_latest_recovery_policy,
             find_latest_stand_policy,
+            reset_fallen,
             reset_standing,
         )
+        from core.getup_stages import GETUP, ROLL
         from core.terrains import TERRAINS
     except ImportError:
         from g1_stand_onnx import DEFAULT_LOCAL_POLICY, TERRAINS, G1StandPolicy, reset_standing
 
         WalkStandBridge = None
+        GetUpBridge = None
 
         def find_latest_stand_policy():  # noqa: D103
             return None
+
+        def find_latest_recovery_policy(_kind):  # noqa: D103
+            return None
+
+        def reset_fallen(*_a, **_k):  # noqa: D103
+            raise RuntimeError("recover mode needs the g1_app package layout")
+
+        ROLL, GETUP = "roll", "getup"
 
 import tkinter as tk
 
@@ -50,10 +67,14 @@ CMD_RANGES = {"vx": (-0.5, 1.0), "vy": (-0.5, 0.5), "wz": (-1.0, 1.0)}
 
 class G1Gui:
     def __init__(self, policy=DEFAULT_LOCAL_POLICY, scene=None, terrain="flat",
-                 stand_policy=None, mode="walk"):
+                 stand_policy=None, mode="walk", policy_roll=None,
+                 policy_standup=None, seed=0):
         self.policy_path = policy
         self.stand_policy_path = stand_policy or find_latest_stand_policy()
         self.policy_mode = mode
+        self.policy_roll = policy_roll
+        self.policy_standup = policy_standup
+        self._seed = seed
         self.viewer = None
         self._load_scene(scene or TERRAINS.get(terrain, TERRAINS["flat"]))
 
@@ -73,16 +94,31 @@ class G1Gui:
         self.mj_model = mujoco.MjModel.from_xml_path(scene_path)
         self.mj_model.opt.timestep = SIM_DT
         self.mj_data = mujoco.MjData(self.mj_model)
-        if self.stand_policy_path is not None and WalkStandBridge is not None:
+        if self.policy_mode == "recover" and GetUpBridge is not None:
+            stage_policies = {}
+            for kind, given in (("roll", self.policy_roll),
+                                ("getup", self.policy_standup)):
+                path = given or find_latest_recovery_policy(kind)
+                if path is None:
+                    train_stage = "roll" if kind == "roll" else "standup"
+                    raise FileNotFoundError(
+                        f"no {kind} policy: train it with "
+                        f"`g1 train -- --task getup --stage {train_stage}`")
+                stage_policies[kind] = path
+            self.bridge = GetUpBridge(
+                self.mj_model, self.mj_data, stage_policies, sim_dt=SIM_DT,
+                stand_policy_path=self.stand_policy_path)
+            self._drop()
+        elif self.stand_policy_path is not None and WalkStandBridge is not None:
             self.bridge = WalkStandBridge(
                 self.mj_model, self.mj_data, self.policy_path,
                 self.stand_policy_path, sim_dt=SIM_DT, mode=self.policy_mode)
         else:
             self.bridge = G1StandPolicy(self.mj_model, self.mj_data, self.policy_path,
                                         sim_dt=SIM_DT)
-        self.bridge.standstill = getattr(self, "standstill_var", None) is None or \
-            self.standstill_var.get()
-        reset_standing(self.mj_model, self.mj_data, self.bridge.default_pos, height=0.78)
+            self.bridge.standstill = getattr(self, "standstill_var", None) is None or \
+                self.standstill_var.get()
+            reset_standing(self.mj_model, self.mj_data, self.bridge.default_pos, height=0.78)
         self.scene_path = scene_path
 
         self.viewer = mujoco.viewer.launch_passive(self.mj_model, self.mj_data)
@@ -119,18 +155,26 @@ class G1Gui:
 
         btns = tk.Frame(self.root)
         btns.pack(pady=6)
-        for text, cmd in (("Stand", (0, 0, 0)), ("Walk", (0.5, 0, 0)),
-                          ("Turn left", (0, 0, 0.5)), ("Stop", (0, 0, 0))):
-            tk.Button(btns, text=text, width=9,
-                      command=lambda c=cmd: self._preset(c)).pack(side="left", padx=2)
-        tk.Button(btns, text="Reset", width=7, command=self._reset).pack(side="left", padx=2)
+        if self.policy_mode == "recover" and GetUpBridge is not None and \
+                isinstance(self.bridge, GetUpBridge):
+            for text, cmd in (("Roll", ROLL), ("GetUp", GETUP), ("Auto", None)):
+                tk.Button(btns, text=text, width=9,
+                          command=lambda c=cmd: self._stage(c)).pack(side="left", padx=2)
+        else:
+            for text, cmd in (("Stand", (0, 0, 0)), ("Walk", (0.5, 0, 0)),
+                              ("Turn left", (0, 0, 0.5)), ("Stop", (0, 0, 0))):
+                tk.Button(btns, text=text, width=9,
+                          command=lambda c=cmd: self._preset(c)).pack(side="left", padx=2)
+        tk.Button(btns, text="Drop" if self.policy_mode == "recover" else "Reset",
+                  width=7, command=self._reset).pack(side="left", padx=2)
         tk.Button(btns, text="Quit", width=7, command=self._quit).pack(side="left", padx=2)
 
-        self.standstill_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(self.root, text="Stand still (lock position on zero command)",
-                       variable=self.standstill_var,
-                       command=lambda: setattr(self.bridge, "standstill",
-                                               self.standstill_var.get())).pack(pady=(0, 4))
+        if GetUpBridge is None or not isinstance(self.bridge, GetUpBridge):
+            self.standstill_var = tk.BooleanVar(value=True)
+            tk.Checkbutton(self.root, text="Stand still (lock position on zero command)",
+                           variable=self.standstill_var,
+                           command=lambda: setattr(self.bridge, "standstill",
+                                                   self.standstill_var.get())).pack(pady=(0, 4))
 
         if WalkStandBridge is not None and isinstance(self.bridge, WalkStandBridge):
             mrow = tk.Frame(self.root)
@@ -154,8 +198,11 @@ class G1Gui:
         self.status = tk.Label(self.root, text="starting…", anchor="w", justify="left",
                                font=("monospace", 10))
         self.status.pack(fill="x", padx=8, pady=4)
-        tk.Label(self.root, text="Keys: arrows = move, A/D = turn, Space = stand",
-                 fg="gray").pack(pady=(0, 6))
+        if self.policy_mode == "recover":
+            hint = "Roll/GetUp force a stage, Auto resumes the switcher, Drop = new fall"
+        else:
+            hint = "Keys: arrows = move, A/D = turn, Space = stand"
+        tk.Label(self.root, text=hint, fg="gray").pack(pady=(0, 6))
 
         self.root.bind("<Up>", lambda _e: self._nudge("vx", +0.1))
         self.root.bind("<Down>", lambda _e: self._nudge("vx", -0.1))
@@ -184,9 +231,28 @@ class G1Gui:
         self._push_cmd()
 
     def _reset(self):
+        if GetUpBridge is not None and isinstance(self.bridge, GetUpBridge):
+            self._drop()
+            return
         reset_standing(self.mj_model, self.mj_data, self.bridge.default_pos, height=0.78)
         self.bridge.phase = 0.0
         self.fell = False
+
+    def _drop(self):
+        """Recover mode: new random fall (seeded) + re-arm the switcher."""
+        self._seed += 1
+        muj_q = self.bridge.stage_policies[ROLL].muj_q
+        reset_fallen(self.mj_model, self.mj_data, self.bridge.default_pos,
+                     muj_q=muj_q, seed=self._seed)
+        self.bridge.switcher.reset()
+        self.fell = False
+
+    def _stage(self, stage):
+        """Recover mode: force ROLL/GETUP, or None for AUTO (switcher decides)."""
+        if stage is None:
+            self.bridge.switcher.reset()
+        else:
+            self.bridge.switcher.force(stage)
 
     def _quit(self):
         try:
@@ -209,18 +275,30 @@ class G1Gui:
         self.viewer.sync()
 
         h, tilt, cmd, stand_state = self.bridge.telemetry()
-        if h < 0.4 or tilt > 0.7:
+        is_getup = GetUpBridge is not None and isinstance(self.bridge, GetUpBridge)
+        extra = ""
+        if is_getup:
+            try:
+                _, _, _, facing, _ = self.bridge._metrics()
+                extra = f" facing={facing:+.2f}"
+            except Exception:
+                pass
+            state = f"GETUP [{stand_state.upper()}]"
+            self.fell = stand_state in ("roll", "getup")
+        elif h < 0.4 or tilt > 0.7:
             state = "FELL — press Reset"
+            self.fell = True
         elif not np.allclose(cmd, 0):
             state = "WALKING"
+            self.fell = False
         else:
             state = {"hold": "STANDING (settling…)", "frozen": "STANDING STILL",
                       "walk": "STANDING",
                       "stand": "STANDING (balance policy)"}.get(stand_state, "STANDING")
-        self.fell = state.startswith("FELL")
+            self.fell = False
         self.status.config(
-            text=f"t={self.sim_steps * SIM_DT:6.1f}s  height={h:.2f}m  tilt={tilt:.2f}\n"
-                 f"cmd=[{cmd[0]:+.2f} {cmd[1]:+.2f} {cmd[2]:+.2f}]  {state}")
+            text=f"t={self.sim_steps * SIM_DT:6.1f}s  height={h:.2f}m  tilt={tilt:.2f}{extra}\n"
+                  f"cmd=[{cmd[0]:+.2f} {cmd[1]:+.2f} {cmd[2]:+.2f}]  {state}")
         self.root.after(10, self._tick)
 
     def run(self):
@@ -240,5 +318,10 @@ if __name__ == "__main__":
     ap.add_argument("--terrain", choices=sorted(TERRAINS), default="flat")
     ap.add_argument("--stand-policy", default=None,
                     help="Stand-still policy (default: latest g1_stand snapshot)")
-    ap.add_argument("--mode", choices=("walk", "stand", "auto"), default="walk")
+    ap.add_argument("--policy-roll", default=None,
+                    help="Roll-to-supine ONNX for --mode recover")
+    ap.add_argument("--policy-standup", default=None,
+                    help="Supine-to-stand ONNX for --mode recover")
+    ap.add_argument("--mode", choices=("walk", "stand", "auto", "recover"), default="walk")
+    ap.add_argument("--seed", type=int, default=0)
     G1Gui(**vars(ap.parse_args())).run()

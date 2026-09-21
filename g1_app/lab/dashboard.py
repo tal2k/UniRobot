@@ -117,6 +117,17 @@ METRICS = {
     "Torso horizontal",
     "Reward for the torso lying flat (max 1.0). The opposite pole of the upright bonus — Reposition wants the robot flat and stable before SitUp starts.",
   ),
+  "Episode_Reward/roll_success": (
+    "Roll-over success",
+    "Bonus for ending a Roll episode low and face-up (max 3.0). The v2 "
+    "funnel money chart — when it climbs toward 3, any fall reliably "
+    "becomes a supine lying pose.",
+  ),
+  "Episode_Reward/face_up": (
+    "Facing up",
+    "How closely the torso gravity matches flat face-up (max 1.5). Dense "
+    "shaping behind the sparse roll bonus.",
+  ),
   "Episode_Reward/stand_still": (
     "Standing still",
     "Reward for a quiet root (low body velocity, max 1.0). Recovery steps are "

@@ -10,21 +10,20 @@ sys.path.insert(0, os.path.join(_WORKSPACE, "unitree_rl_mjlab"))
 
 from core.getup_stages import (  # noqa: E402
     DONE,
+    GETUP,
     IDLE,
+    ROLL,
+    SUPINE_FACING,
     SUPINE_TARGET,
-    A,
-    B,
-    C,
     StageGate,
     StageSwitcher,
-    gate_joint_indices,
-    is_fallen,
-    mean_abs_deviation,
     rms_pose_error,
 )
 from training.getup.getup_env_cfg import make_getup_env_cfg  # noqa: E402
 from training.getup.reposition_env_cfg import make_reposition_env_cfg  # noqa: E402
+from training.getup.roll_env_cfg import make_roll_env_cfg  # noqa: E402
 from training.getup.situp_env_cfg import make_situp_env_cfg  # noqa: E402
+from training.getup.standup_env_cfg import make_standup_env_cfg  # noqa: E402
 
 ACTOR_TERMS = ["base_ang_vel", "projected_gravity", "base_height",
                "joint_pos", "joint_vel", "actions"]
@@ -38,6 +37,11 @@ ACTOR_TERMS = ["base_ang_vel", "projected_gravity", "base_height",
       "bad_support", "no_head_contact"}),
     (make_getup_env_cfg, 8.0,
      {"stand_success", "stand_on_feet", "bad_support", "no_head_contact"}),
+    (make_roll_env_cfg, 12.0,
+     {"roll_success", "face_up", "supine_pose", "torso_horizontal"}),
+    (make_standup_env_cfg, 12.0,
+     {"stand_success", "stand_on_feet", "pelvis_rising", "feet_force",
+      "bad_support", "no_head_contact"}),
 ])
 def test_stage_env_cfgs_build(factory, episode, expected):
     cfg = factory()
@@ -59,6 +63,30 @@ def test_stage_a_has_no_balance_only_terms():
     assert [s.name for s in cfg.scene.sensors] == ["self_collision"]
 
 
+def test_roll_cfg_minimal_sensors():
+    cfg = make_roll_env_cfg()
+    # Rolling needs orientation + pose feedback only (no feet/head terms).
+    assert [s.name for s in cfg.scene.sensors] == ["self_collision"]
+    assert "stand_on_feet" not in cfg.rewards
+    assert "feet_force" not in cfg.rewards
+    assert cfg.rewards["roll_success"].params["max_facing"] == SUPINE_FACING
+
+
+def test_standup_cfg_merged():
+    cfg = make_standup_env_cfg()
+    # Mixed starts (standing + crouch + lying) break the discovery plateau.
+    assert cfg.events["reset_mixed"].func.__name__ == "reset_mixed_starts"
+    assert cfg.events["reset_mixed"].params["stand_prob"] == 0.15
+    # Pull-assist with within-episode fade (HoST-style).
+    assert cfg.events["lift_assist"].func.__name__ == "lift_assist"
+    assert cfg.events["lift_assist"].params["max_force"] == 180.0
+    assert "wrist_pose_l2" in cfg.rewards
+    # Crouch-loading gate loosened vs the Stage-C recipe so the sit-up
+    # phase earns signal; stand_success pays for the full rise.
+    assert cfg.rewards["stand_on_feet"].params["min_height"] == 0.55
+    assert cfg.rewards["stand_success"].params["min_height"] == 0.70
+
+
 def test_stage_b_lying_reset():
     cfg = make_situp_env_cfg()
     assert cfg.events["reset_lying"].func.__name__ == "reset_lying_pose"
@@ -71,7 +99,8 @@ def test_stage_tasks_register():
 
     tasks = list_tasks()
     for task_id in ("Unitree-G1-Getup", "Unitree-G1-Getup-Reposition",
-                    "Unitree-G1-Getup-SitUp", "Unitree-G1-Getup-Rise"):
+                    "Unitree-G1-Getup-SitUp", "Unitree-G1-Getup-Rise",
+                    "Unitree-G1-Getup-Roll", "Unitree-G1-Getup-StandUp"):
         assert task_id in tasks
 
 
@@ -88,6 +117,8 @@ def test_stage_tasks_load_full_config():
         ("Unitree-G1-Getup-Reposition", "g1_getup_reposition"),
         ("Unitree-G1-Getup-SitUp", "g1_getup_situp"),
         ("Unitree-G1-Getup-Rise", "g1_getup_rise"),
+        ("Unitree-G1-Getup-Roll", "g1_getup_roll"),
+        ("Unitree-G1-Getup-StandUp", "g1_getup_standup"),
     ):
         cfg = mod.TrainConfig.from_task(task_id)
         assert cfg.agent.experiment_name == experiment
@@ -100,128 +131,149 @@ def test_train_stage_mapping():
     assert STAGE_TASK_IDS["A"] == "Unitree-G1-Getup-Reposition"
     assert STAGE_TASK_IDS["B"] == "Unitree-G1-Getup-SitUp"
     assert STAGE_TASK_IDS["C"] == "Unitree-G1-Getup-Rise"
+    assert STAGE_TASK_IDS["roll"] == "Unitree-G1-Getup-Roll"
+    assert STAGE_TASK_IDS["standup"] == "Unitree-G1-Getup-StandUp"
     assert TASK_IDS["getup"] == "Unitree-G1-Getup"
 
 
 def test_curriculum_reexports():
     from training.getup import curriculum
 
-    assert curriculum.A == A and curriculum.DONE == DONE
-    assert curriculum.STAGE_SEQUENCE == (A, B, C)
-    assert set(curriculum.STAGE_GATES) == {A, B, C}
+    assert curriculum.ROLL == ROLL and curriculum.DONE == DONE
+    assert curriculum.GETUP == GETUP
+    assert curriculum.STAGE_SEQUENCE == (ROLL, GETUP)
+    assert set(curriculum.STAGE_GATES) == {ROLL, GETUP}
 
 
 def _switcher(min_ticks=3):
     return StageSwitcher(min_ticks=min_ticks, dt=0.02)
 
 
-def test_stage_switcher_full_sequence():
+def test_switcher_engages_roll_when_prone():
     sw = _switcher()
     assert sw.state == IDLE
-    # fallen -> engage; lying + supine-matching -> B ...
-    assert sw.update(0.15, 0.90, 0.0, 0.50, 0.10) == A
-    for _ in range(3):
-        state = sw.update(0.15, 0.90, 0.0, 0.50, 0.10)
-    assert state == B
-    for _ in range(3):
-        state = sw.update(0.60, 0.50, 0.0, 0.40)  # crouch
-    assert state == C
-    for _ in range(3):
-        state = sw.update(0.76, 0.20, 0.05, 0.05)  # standing, slow
-    assert state == DONE
+    # Fallen face-down -> ROLL.
+    assert sw.update(0.15, 0.90, 0.0, 0.90, 0.60) == ROLL
 
 
-def test_stage_a_gate_uses_pose_not_extension():
-    # Lying + supine-matching joints advance even with low limb extension.
+def test_switcher_skips_roll_when_already_supine():
     sw = _switcher()
-    sw.update(0.15, 0.90, 0.0, 0.50, 0.10)
+    # Fallen but already face-up -> straight to GETUP.
+    assert sw.update(0.15, 0.90, 0.0, -0.90, 0.10) == GETUP
+
+
+def test_switcher_stays_idle_when_tall():
+    sw = _switcher()
+    # Tall but tilted: still standing business, not recovery.
+    assert sw.update(0.70, 0.80, 0.0, 0.50, 0.50) == IDLE
+
+
+def test_switcher_full_sequence():
+    sw = _switcher()
+    sw.update(0.15, 0.90, 0.0, 0.90, 0.60)
+    assert sw.state == ROLL
+    # Rolled to supine, joints near target -> GETUP after hold ticks.
     for _ in range(3):
-        state = sw.update(0.15, 0.90, 0.0, 0.05, 0.10)
-    assert state == B
-    # ... while lying + sprawled joints (high extension, bad pose) do not.
-    sw2 = _switcher()
-    sw2.update(0.15, 0.90, 0.0, 0.50, 0.10)
+        state = sw.update(0.15, 0.90, 0.0, -0.80, 0.10)
+    assert state == GETUP
+    # Standing still -> DONE immediately (standing shortcut).
+    assert sw.update(0.76, 0.20, 0.05, -0.10, 0.80) == DONE
+
+
+def test_roll_gate_needs_pose_not_just_facing():
+    # Face-up but tucked: handoff would leave GETUP's start distribution.
+    sw = _switcher()
+    sw.update(0.15, 0.90, 0.0, 0.90, 0.60)
     for _ in range(5):
-        state = sw2.update(0.15, 0.90, 0.0, 0.80, 0.60)
-    assert state == A
+        state = sw.update(0.15, 0.90, 0.0, -0.80, 0.60)
+    assert state == ROLL
 
 
-def test_stage_switcher_standing_shortcut():
-    # Standing still while in A jumps straight to DONE (no A-gate stall).
+def test_switcher_hysteresis_resets_hold():
     sw = _switcher()
-    sw.update(0.15, 0.90, 0.0, 0.50, 0.10)
-    assert sw.state == A
-    assert sw.update(0.78, 0.10, 0.05, 0.05, 0.80) == DONE
-    # Same from B: no detour through C.
-    sw2 = _switcher()
-    sw2.update(0.15, 0.90, 0.0, 0.50, 0.10)
-    for _ in range(3):
-        sw2.update(0.15, 0.90, 0.0, 0.50, 0.10)
-    assert sw2.state == B
-    assert sw2.update(0.78, 0.10, 0.05, 0.05, 0.80) == DONE
-    # ... but a fast-moving standing robot does NOT shortcut (not handoff-safe).
-    sw3 = _switcher()
-    sw3.update(0.15, 0.90, 0.0, 0.50, 0.10)
-    assert sw3.update(0.78, 0.10, 0.50, 0.05, 0.80) == A
+    sw.update(0.15, 0.90, 0.0, 0.90, 0.60)
+    sw.update(0.15, 0.90, 0.0, -0.80, 0.10)  # 1 of 3 ticks
+    sw.update(0.15, 0.90, 0.0, -0.80, 0.10)  # 2 of 3 ticks
+    sw.update(0.15, 0.90, 0.0, -0.80, 0.60)  # pose lost -> hold reset
+    sw.update(0.15, 0.90, 0.0, -0.80, 0.10)
+    sw.update(0.15, 0.90, 0.0, -0.80, 0.10)
+    assert sw.update(0.15, 0.90, 0.0, -0.80, 0.10) == GETUP
 
 
-def test_stage_switcher_hysteresis_resets_hold():
+def test_switcher_reverts_getup_to_roll():
     sw = _switcher()
-    sw.update(0.15, 0.90, 0.0, 0.50, 0.10)
-    sw.update(0.15, 0.90, 0.0, 0.50, 0.10)  # 2 of 3 ticks
-    sw.update(0.15, 0.90, 0.0, 0.50, 0.60)  # pose lost -> hold reset
-    sw.update(0.15, 0.90, 0.0, 0.50, 0.10)
-    sw.update(0.15, 0.90, 0.0, 0.50, 0.10)
-    assert sw.update(0.15, 0.90, 0.0, 0.50, 0.10) == B
+    sw.update(0.15, 0.90, 0.0, -0.90, 0.10)
+    assert sw.state == GETUP
+    # Rolled back to prone mid-rise -> re-roll after hold ticks.
+    for _ in range(3):
+        state = sw.update(0.40, 0.50, 0.0, 0.50, 0.40)
+    assert state == ROLL
 
 
-def test_stage_switcher_reverts_c_to_b():
+def test_switcher_timeout_rerolls():
     sw = _switcher()
-    sw.update(0.15, 0.90, 0.0, 0.50, 0.10)
-    for _ in range(3):
-        sw.update(0.15, 0.90, 0.0, 0.50, 0.10)
-    for _ in range(3):
-        sw.update(0.60, 0.50, 0.0, 0.40)
-    assert sw.state == C
-    for _ in range(3):
-        state = sw.update(0.40, 0.50, 0.0, 0.40)  # sank below the crouch
-    assert state == B
-
-
-def test_stage_switcher_timeout_restarts_at_a():
-    sw = _switcher()
-    sw.update(0.15, 0.90, 0.0, 0.50, 0.10)
-    for _ in range(3):
-        sw.update(0.15, 0.90, 0.0, 0.50, 0.10)
-    assert sw.state == B
-    ticks = int(6.0 / sw.dt) + 1
+    sw.update(0.15, 0.90, 0.0, -0.90, 0.10)
+    assert sw.state == GETUP
+    ticks = int(12.0 / sw.dt) + 1
     for _ in range(ticks):
-        state = sw.update(0.30, 0.90, 0.0, 0.10, 0.50)  # never reaches crouch
-    assert state == A
+        state = sw.update(0.60, 0.50, 0.0, -0.60, 0.50)  # never stands
+    assert state == ROLL
     assert sw.elapsed == 0.0
 
 
-def test_stage_switcher_reengages_after_done():
+def test_switcher_roll_timeout_retries():
+    sw = _switcher()
+    sw.update(0.15, 0.90, 0.0, 0.90, 0.60)
+    assert sw.state == ROLL
+    ticks = int(8.0 / sw.dt) + 1
+    for _ in range(ticks):
+        state = sw.update(0.15, 0.90, 0.0, 0.90, 0.60)  # never rolls
+    assert state == ROLL
+    assert sw.elapsed == 0.0
+
+
+def test_switcher_standing_shortcut_from_roll():
+    sw = _switcher()
+    sw.update(0.15, 0.90, 0.0, 0.90, 0.60)
+    assert sw.state == ROLL
+    # Somehow standing while rolling -> straight to DONE.
+    assert sw.update(0.78, 0.10, 0.05, 0.0, 0.80) == DONE
+    # ... but a fast-moving tall robot does NOT shortcut.
+    sw2 = _switcher()
+    sw2.update(0.15, 0.90, 0.0, 0.90, 0.60)
+    assert sw2.update(0.78, 0.10, 0.50, 0.0, 0.80) == ROLL
+
+
+def test_switcher_force_override():
+    import pytest
+
+    sw = _switcher()
+    sw.update(0.15, 0.90, 0.0, 0.90, 0.60)
+    assert sw.state == ROLL
+    sw.force(GETUP)  # GUI manual override
+    assert sw.state == GETUP
+    assert sw.elapsed == 0.0
+    sw.force(IDLE)  # AUTO resumes via reset/engage
+    assert sw.update(0.15, 0.90, 0.0, 0.90, 0.60) == ROLL
+    with pytest.raises(AssertionError):
+        sw.force("walk")
+
+
+def test_switcher_reengages_after_done():
     sw = _switcher()
     sw._enter(DONE)
-    assert sw.update(0.20, 0.90, 0.0, 0.0) == A  # fell again -> recover
+    assert sw.update(0.20, 0.90, 0.0, 0.80, 0.50) == ROLL  # prone again
+    sw._enter(DONE)
+    assert sw.update(0.20, 0.90, 0.0, -0.80, 0.10) == GETUP  # supine
 
 
-def test_is_fallen():
-    assert is_fallen(0.20, 0.10)
-    assert is_fallen(0.70, 0.80)
-    assert not is_fallen(0.70, 0.20)
-
-
-def test_gate_joint_indices_and_deviation():
-    names = ("left_shoulder_pitch_joint", "left_elbow_joint", "left_knee_joint",
-             "waist_pitch_joint", "left_hip_pitch_joint")
-    idx = gate_joint_indices(names)
-    assert idx == [0, 1, 2]
-    q = [0.5, 0.0, 0.0, 0.9, 0.0]
-    q0 = [0.0, 0.0, 0.0, 0.0, 0.0]
-    assert abs(mean_abs_deviation(q, q0, idx) - 0.5 / 3) < 1e-9
-    assert mean_abs_deviation(q, q0, []) == 0.0
+def test_gate_facing_thresholds():
+    gate = StageGate(max_facing=SUPINE_FACING)
+    assert gate.satisfied(0.15, 0.90, 0.0, -0.80, 0.10)
+    assert not gate.satisfied(0.15, 0.90, 0.0, 0.50, 0.10)
+    revert = StageGate(min_facing=0.0)
+    assert revert.satisfied(0.40, 0.50, 0.0, 0.50, 0.40)
+    assert not revert.satisfied(0.40, 0.50, 0.0, -0.50, 0.40)
 
 
 def test_gate_satisfied_none_means_ignore():
@@ -248,10 +300,11 @@ def test_supine_target_shared_with_training():
 
 def test_stage_metric_names_exist_in_cfgs():
     # The dashboard hint printed by `g1 train -- --stage X` must name a
-    # reward the stage actually logs (regression: Stage A pointed at a
-    # reward that was never defined).
+    # reward the stage actually logs.
     from lab.train import STAGE_METRICS
 
     assert STAGE_METRICS["A"] in make_reposition_env_cfg().rewards
     assert STAGE_METRICS["B"] in make_situp_env_cfg().rewards
     assert STAGE_METRICS["C"] in make_getup_env_cfg().rewards
+    assert STAGE_METRICS["roll"] in make_roll_env_cfg().rewards
+    assert STAGE_METRICS["standup"] in make_standup_env_cfg().rewards

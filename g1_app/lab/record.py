@@ -137,6 +137,24 @@ class GetupRollout:
     data.ctrl[:] = 0.0
     mujoco.mj_forward(self.model, data)
 
+  def reset_prone(self, data):
+    """Reset to prone (matching Roll training resets, for roll-over eval)."""
+    # Lying flat face-down, height ~0.15
+    data.qpos[0:2] = self.rng.uniform(-0.1, 0.1, 2)
+    data.qpos[2] = float(self.rng.uniform(0.06, 0.20))
+    # Prone: pitch = +pi/2, small roll/yaw noise
+    roll = float(self.rng.uniform(-0.4, 0.4))
+    pitch = math.pi / 2 + float(self.rng.uniform(-0.4, 0.4))
+    yaw = float(self.rng.uniform(-math.pi, math.pi))
+    data.qpos[3:7] = euler_to_quat(roll, pitch, yaw)
+    # Joints sprawled (Roll trains from ±0.6 offsets, not the supine pose).
+    data.qpos[7:][self.muj_q] = (
+      np.asarray(SUPINE_TARGET, dtype=np.float32)
+      + self.rng.uniform(-0.6, 0.6, len(self.default_pos)))
+    data.qvel[:] = 0.0
+    data.ctrl[:] = 0.0
+    mujoco.mj_forward(self.model, data)
+
   def reset_standing(self, data):
     data.qpos[0:2] = self.rng.uniform(-0.05, 0.05, 2)
     data.qpos[2] = float(self.rng.uniform(0.76, 0.80))
@@ -215,6 +233,8 @@ def record(policy_path, episodes=3, seconds=8.0, fps=20, width=480, height=360,
         roller.reset_standing(data)
       elif start == "supine":
         roller.reset_supine(data)
+      elif start == "prone":
+        roller.reset_prone(data)
       else:
         roller.reset_fallen(data)
       roller.last_action = np.zeros_like(roller.last_action)
@@ -258,11 +278,13 @@ def main():
                     help="policy.onnx path directly (e.g. models/g1_stand_policy.onnx); "
                          "overrides --run-dir/--experiment lookup")
     ap.add_argument("--experiment", default="g1_getup",
-                    help="Experiment folder under logs/rsl_rl (g1_getup|g1_stand)")
+                    help="Experiment folder under logs/rsl_rl "
+                         "(g1_getup|g1_stand|g1_getup_roll|g1_getup_standup)")
     ap.add_argument("--stand", action="store_true",
                     help="Start episodes standing (for stand policy) not fallen")
-    ap.add_argument("--start", choices=["fallen", "supine"], default="fallen",
-                    help="Start state: fallen (random sprawl) or supine (flat on back, extended)")
+    ap.add_argument("--start", choices=["fallen", "supine", "prone"], default="fallen",
+                    help="Start state: fallen (random sprawl), supine (flat on "
+                         "back, extended) or prone (face-down, for roll-over eval)")
     ap.add_argument("--episodes", type=int, default=3)
     ap.add_argument("--seconds", type=float, default=8.0)
     ap.add_argument("--fps", type=int, default=20)

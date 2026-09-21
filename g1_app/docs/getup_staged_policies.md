@@ -1,8 +1,9 @@
 # Get-up as staged multi-policy training — plan + status
 
-Status: **implemented in the working tree (uncommitted)** — the Stage A/B/C
-task cfgs, `GetUpBridge`, `g1 recover`, `--stage` training flag and
-config-shape/switcher tests all exist; see §8 for what is done vs next.
+Status: **v2 implemented in the working tree (uncommitted)** — ROLL→GETUP
+deployment with facing gates, Roll + merged-StandUp training tasks; see
+§14. The v1 A/B/C deployment switcher below is superseded (its training
+cfgs stay as curriculum/warm-start sources).
 Created: 2026-09-20, updated: 2026-09-21
 Scope: train the G1 to recover from any fall with **three specialist policies**
 that hand off in sequence — Reposition → SitUp → Rise — instead of one
@@ -267,6 +268,13 @@ g1_app/tests/test_getup_stages.py  # NEW: config shape + registration tests
    `GetUpBridge` (see §5).
 7. Keep the `self_collision` contact sensor (subtree `pelvis`) — Stage A/B
    rewards need it; foot contact sensors are needed for B/C only.
+8. **MJLab default tensors are per-env** (`default_joint_pos` is
+   `(num_envs, J)`, verified in `mjlab/entity/entity.py` + upstream
+   `default_joint_pos[env_ids]` indexing). Never `.flatten()` them: in an
+   env factory that *crashes* past 1 env; in a reward it silently
+   broadcasts env 0's pose to all envs. Use row-indexed helpers
+   (`rewards._default_joint_pos`, per-env rows in resets) and cover both
+   shapes in `tests/test_getup_mdp.py` with non-identical per-env fakes.
 
 ---
 
@@ -450,4 +458,62 @@ HoST-style), each discovery→refine via `--resume`.
   lists it unfinished; FIRM shows why it's unstable).
 - Tightening supine tolerances below RMS 0.25 / noise ±0.2 (sim-convenience
   target; hardware needs the slack).
+
+---
+
+## 14. v2 implementation — ROLL → GETUP (shipped 2026-09-21, uncommitted)
+
+v1 (A/B/C deployment switcher, §2–§8) is superseded: three deployment
+switches contradict the literature (§13.1 — HumanUP/HoST ship single get-up
+policies; BAT shows heuristic switching is the fragile part). v2 splits by
+*start family* with supine as the funnel and trains **two** runs.
+
+### 14.1 Deployment: one recovery switch
+
+`core/getup_stages.py::StageSwitcher` states are now
+`IDLE | ROLL | GETUP | DONE`. New metric `facing` = body-x projected
+gravity (yaw-invariant: supine ≈ −1, prone ≈ +1, side ≈ 0 — verify the sign
+in sim if the model ever changes):
+
+| State | Runs when | Advances when (10 ticks) |
+|---|---|---|
+| ROLL | fallen + not face-up (`facing > −0.5`) | supine-ish (`facing < −0.5`, h<0.35, slow) + joints near supine (pose_err<0.30, keeps the handoff inside GETUP's start distribution) → GETUP |
+| GETUP | face-up fall (skips ROLL entirely) | standing gate (h>0.72, tilt<0.3, slow) → DONE |
+| DONE | — | balance policy; falls re-engage ROLL/GETUP by facing |
+
+Kept from v1: hysteresis, per-stage timeouts (ROLL 8 s, GETUP 12 s —
+timeouts re-roll instead of dead-ending), GETUP→ROLL revert when supine is
+lost (`facing > 0` sustained), standing shortcut to DONE, 0.4 s target
+cross-fade on every switch, PD every sim step / inference every 4th.
+`GetUpBridge` holds `{"roll", "getup"}` policies; `g1 recover` takes
+`--policy-roll/--policy-standup` (curated `models/g1_getup_roll_policy.onnx`
+/ `models/g1_getup_standup_policy.onnx` first, else newest
+`g1_getup_roll` / `g1_getup_standup` snapshot).
+
+### 14.2 Training: two runs
+
+- **Roll** (`--stage roll`, exp `g1_getup_roll`): any-sprawl resets;
+  `roll_success` (low + face-up, w 3.0) + `face_up` gravity shaping (w 1.5,
+  HumanUP-style) + `supine_pose`/`torso_horizontal` + weak reg. Watch
+  `Episode_Reward/roll_success` (target ≥ 0.8, cf. HumanUP 98.3%).
+- **StandUp** (`--stage standup`, exp `g1_getup_standup`): lying-family
+  resets; merged B+C rewards height-banded HoST-style — `stand_on_feet`
+  loosened to the crouch (min_h 0.55) so sit-up earns signal,
+  `stand_success` (0.70/0.3) pays the full rise; 12 s episodes. Discovery
+  aids shipped after the first plateau: mixed starts (15% standing, 25%
+  crouch key-state, 60% lying), `lift_assist` (upward pelvis force fading
+  within each episode, HoST-style), `wrist_pose_l2` lock (wrists add dims,
+  not leverage). Train discovery, then `--resume` refine. Watch
+  `Episode_Reward/stand_success` (target ≥ 0.8, cf. HumanUP 78.3%).
+  Retrain with these aids (2026-09-21) lifted both money metrics off zero
+  by iter ~2000 where the unaided run sat at 0.0 through iter 3600.
+- Legacy `--stage A|B|C` tasks stay registered as curriculum/warm-start
+  sources (same 94-dim arch) but are not deployed.
+
+### 14.3 Eval
+
+`g1 record --start prone` replays roll-over; `--start supine` the stand-up.
+Composed target (flat): fall→stand ≥ 70% across supine/prone/side starts —
+to be tightened to the §13.3 protocol (`g1 eval-recover` matrix) once both
+policies exist.
 ```

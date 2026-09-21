@@ -8,7 +8,7 @@ Commands:
     stand      viewer-only balanced stand demo
     gui        3D viewer + tkinter control panel
     check      10 s tkinter self-test
-    recover    staged get-up (Reposition -> SitUp -> Rise) from a fall
+    recover    staged get-up v2 (Roll -> GetUp) from a fall
     train      training + dashboard (--task getup|stand, default getup)
     train-stand stand-still balance training + dashboard (shortcut)
     dashboard  friendly live dashboard (:6006)
@@ -31,7 +31,8 @@ for _p in (_WS, _CLI_DIR):
         sys.path.insert(0, _p)
 
 
-def _add_common_stand_args(ap: argparse.ArgumentParser):
+def _add_common_stand_args(ap: argparse.ArgumentParser,
+                           modes=("walk", "stand", "auto")):
     from g1_app.core.bridge import DEFAULT_LOCAL_POLICY
     from g1_app.core.terrains import TERRAINS
 
@@ -41,7 +42,7 @@ def _add_common_stand_args(ap: argparse.ArgumentParser):
     ap.add_argument("--stand-policy", default=None,
                     help="Stand-still policy (default: models/g1_stand_policy.onnx, "
                          "else latest g1_stand snapshot)")
-    ap.add_argument("--mode", choices=("walk", "stand", "auto"), default="walk",
+    ap.add_argument("--mode", choices=modes, default="walk",
                     help="walk = velocity policy, stand = balance policy, "
                          "auto = switch on zero command")
     return ap
@@ -62,7 +63,9 @@ def cmd_gui(args: argparse.Namespace) -> int:
     from g1_app.apps.gui import G1Gui
 
     G1Gui(policy=args.policy, scene=args.scene, terrain=args.terrain,
-          stand_policy=args.stand_policy, mode=args.mode).run()
+          stand_policy=args.stand_policy, mode=args.mode,
+          policy_roll=args.policy_roll, policy_standup=args.policy_standup,
+          seed=args.seed).run()
     return 0
 
 
@@ -82,9 +85,8 @@ def cmd_recover(args: argparse.Namespace) -> int:
 
     scene = resolve_scene(args.terrain, args.scene)
     stage_policies = {
-        "A": args.policy_a,
-        "B": args.policy_b,
-        "C": args.policy_c,
+        "roll": args.policy_roll,
+        "getup": args.policy_standup,
     }
     stage_policies = {k: v for k, v in stage_policies.items() if v is not None}
     ok = run_recover(stage_policies or None, scene, args.seconds, args.sim_dt,
@@ -167,7 +169,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_stand)
 
     p = sub.add_parser("gui", help="interactive 3D + control panel")
-    _add_common_stand_args(p)
+    _add_common_stand_args(p, modes=("walk", "stand", "auto", "recover"))
+    p.add_argument("--policy-roll", default=None,
+                   help="Roll-to-supine ONNX for --mode recover")
+    p.add_argument("--policy-standup", default=None,
+                   help="Supine-to-stand ONNX for --mode recover")
+    p.add_argument("--seed", type=int, default=0,
+                   help="Fall seed for --mode recover drops")
     p.set_defaults(func=cmd_gui)
 
     p = sub.add_parser("check", help="tkinter env self-test")
@@ -176,13 +184,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("recover", help="staged get-up from a fall")
     p.add_argument("--scene", default=None, help="MuJoCo scene XML (overrides --terrain)")
     p.add_argument("--terrain", choices=sorted(TERRAINS), default="flat")
-    p.add_argument("--policy-a", default=None,
-                   help="Reposition ONNX (default: curated, else latest "
-                        "g1_getup_reposition snapshot)")
-    p.add_argument("--policy-b", default=None,
-                   help="SitUp ONNX (default: curated, else latest g1_getup_situp snapshot)")
-    p.add_argument("--policy-c", default=None,
-                   help="Rise ONNX (default: curated, else latest g1_getup_rise snapshot)")
+    p.add_argument("--policy-roll", default=None,
+                   help="Roll-to-supine ONNX (default: curated, else latest "
+                        "g1_getup_roll snapshot)")
+    p.add_argument("--policy-standup", default=None,
+                   help="Supine-to-stand ONNX (default: curated, else latest "
+                        "g1_getup_standup snapshot)")
     p.add_argument("--stand-policy", default=None,
                    help="Balance policy for the DONE handoff (default: "
                         "models/g1_stand_policy.onnx, else latest snapshot)")
@@ -217,8 +224,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="experiment folder under logs/rsl_rl (g1_getup|g1_stand)")
     p.add_argument("--stand", action="store_true",
                    help="start episodes standing (for stand policy) not fallen")
-    p.add_argument("--start", choices=["fallen", "supine"], default="fallen",
-                   help="start state: fallen (random sprawl) or supine (flat on back, extended)")
+    p.add_argument("--start", choices=["fallen", "supine", "prone"], default="fallen",
+                   help="start state: fallen (random sprawl), supine (flat on "
+                        "back, extended) or prone (face-down, for roll-over eval)")
     p.add_argument("--episodes", type=int, default=3)
     p.add_argument("--seconds", type=float, default=8.0)
     p.add_argument("--fps", type=int, default=20)

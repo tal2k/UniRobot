@@ -64,3 +64,13 @@ def unitree_g1_getup_situp_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
 def unitree_g1_getup_rise_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Rise (Stage C) runner."""
   return _runner_cfg("g1_getup_rise", 5001)
+
+
+def unitree_g1_getup_roll_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Roll (v2 funnel stage) runner."""
+  return _runner_cfg("g1_getup_roll", 3000)
+
+
+def unitree_g1_getup_standup_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """StandUp (v2 merged get-up) runner."""
+  return _runner_cfg("g1_getup_standup", 5001)

@@ -1,6 +1,9 @@
 """Unitree G1 fall-recovery (get-up) environment configurations.
 
-Three staged tasks + the legacy single-policy task:
+v2 pipeline (see g1_app/docs/getup_staged_policies.md §13):
+  Unitree-G1-Getup-Roll      Roll: any fall -> supine (roll_env_cfg)
+  Unitree-G1-Getup-StandUp   StandUp: lying family -> stand, merged (standup_env_cfg)
+Legacy staged tasks (kept as curriculum/warm-start sources):
   Unitree-G1-Getup-Reposition  Stage A (reposition_env_cfg)
   Unitree-G1-Getup-SitUp       Stage B (situp_env_cfg)
   Unitree-G1-Getup-Rise        Stage C (getup_env_cfg, refinement recipe)
@@ -16,7 +19,9 @@ from src.assets.robots import (
 
 from training.getup.getup_env_cfg import make_getup_env_cfg
 from training.getup.reposition_env_cfg import make_reposition_env_cfg
+from training.getup.roll_env_cfg import make_roll_env_cfg
 from training.getup.situp_env_cfg import make_situp_env_cfg
+from training.getup.standup_env_cfg import make_standup_env_cfg
 
 
 def _finalize_g1_cfg(cfg: ManagerBasedRlEnvCfg, play: bool) -> ManagerBasedRlEnvCfg:
@@ -62,3 +67,13 @@ def unitree_g1_getup_situp_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 def unitree_g1_getup_rise_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create Unitree G1 Rise (Stage C) configuration."""
   return _finalize_g1_cfg(make_getup_env_cfg(), play)
+
+
+def unitree_g1_getup_roll_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create Unitree G1 Roll (v2 funnel stage) configuration."""
+  return _finalize_g1_cfg(make_roll_env_cfg(), play)
+
+
+def unitree_g1_getup_standup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create Unitree G1 StandUp (v2 merged get-up) configuration."""
+  return _finalize_g1_cfg(make_standup_env_cfg(), play)

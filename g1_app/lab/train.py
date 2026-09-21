@@ -7,6 +7,8 @@ Canonical home (moved from legacy train_getup.py). Prefer:
     g1 train -- --task getup --stage A   # staged get-up: Reposition
     g1 train -- --task getup --stage B   # staged get-up: SitUp
     g1 train -- --task getup --stage C   # staged get-up: Rise
+    g1 train -- --task getup --stage roll      # v2 funnel: any fall -> supine
+    g1 train -- --task getup --stage standup   # v2 merged: lying -> stand
     g1 train-stand -- --num-envs 1024
     g1 train -- --num-envs 1024 --max-iterations 2000
 """
@@ -27,17 +29,23 @@ TASK_IDS = {
   "getup": "Unitree-G1-Getup",
   "stand": "Unitree-G1-Stand",
 }
-# Staged get-up: one task (and experiment folder) per phase. See
+# Staged get-up: one task (and experiment folder) per phase. v2 pipeline
+# trains Roll + StandUp (see g1_app/docs/getup_staged_policies.md §13);
+# A/B/C remain as curriculum/warm-start sources. See
 # g1_app/docs/getup_staged_policies.md.
 STAGE_TASK_IDS = {
   "A": "Unitree-G1-Getup-Reposition",
   "B": "Unitree-G1-Getup-SitUp",
   "C": "Unitree-G1-Getup-Rise",
+  "roll": "Unitree-G1-Getup-Roll",
+  "standup": "Unitree-G1-Getup-StandUp",
 }
 STAGE_METRICS = {
   "A": "supine_success",
   "B": "stand_on_feet",
   "C": "stand_success",
+  "roll": "roll_success",
+  "standup": "stand_success",
 }
 
 
@@ -63,8 +71,9 @@ def main() -> int:
   ap.add_argument("--task", choices=sorted(TASK_IDS), default="getup",
                   help="Which policy to train (default: getup)")
   ap.add_argument("--stage", choices=sorted(STAGE_TASK_IDS), default=None,
-                  help="Staged get-up phase A|B|C (requires --task getup); "
-                       "default trains the legacy single-policy getup task")
+                   help="Get-up phase: v2 pipeline uses roll|standup "
+                        "(A|B|C are legacy curriculum stages); "
+                        "default trains the legacy single-policy getup task")
   ap.add_argument("--num-envs", type=int, default=2048,
                   help="Parallel sim environments (fewer for small GPUs)")
   ap.add_argument("--max-iterations", type=int, default=None,
